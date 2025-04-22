@@ -7,15 +7,21 @@ from models.token_counter import count_tokens
 
 class PromptEvaluator:
     """提示词评估引擎"""
+    
     def __init__(self):
         config = load_config()
-        self.evaluator_model = config.get("evaluator_model", "gpt-4") 
+        self.evaluator_model = config.get("evaluator_model", "gpt-4")
         self.provider = get_provider_from_model(self.evaluator_model)
-        self.client = get_client(self.provider)
+        self.client = None  # 延迟初始化
     
-    async def evaluate_response(self, model_response: str, expected_output: str, 
-                               criteria: Dict, prompt: str) -> Dict:
+    def _init_client(self):
+        """根据当前设置初始化客户端"""
+        if not self.client:
+            self.client = get_client(self.provider)
+    
+    async def evaluate_response(self, model_response: str, expected_output: str, criteria: Dict, prompt: str) -> Dict:
         """评估模型响应"""
+        self._init_client()  # 确保客户端已初始化
         prompt_tokens = count_tokens(prompt)
         
         evaluation_prompt = f"""

@@ -146,10 +146,23 @@ def get_test_set_list() -> List[str]:
     """获取所有测试集列表"""
     return [f.name.replace(".json", "") for f in TEST_SETS_DIR.glob("*.json")]
 
-def save_template(name: str, template: Dict) -> None:
-    """保存提示词模板"""
-    with open(TEMPLATES_DIR / f"{name}.json", "w", encoding="utf-8") as f:
-        json.dump(template, f, indent=2, ensure_ascii=False)
+def save_template(name, template):
+    """保存提示词模板
+    
+    Args:
+        name: 模板名称
+        template: 模板数据
+    """
+    # 创建保存目录
+    template_dir = DATA_DIR / "templates"
+    template_dir.mkdir(exist_ok=True)
+    
+    # 保存模板
+    template_path = template_dir / f"{name}.json"
+    with open(template_path, "w", encoding="utf-8") as f:
+        json.dump(template, f, ensure_ascii=False, indent=2)
+    
+    return template_path
 
 def load_template(name: str) -> Dict:
     """加载提示词模板"""

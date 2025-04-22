@@ -1,20 +1,36 @@
+# ui/test_manager.py
 import streamlit as st
 import json
 import pandas as pd
 from datetime import datetime
-# 修改导入方式
 from config import save_test_set, load_test_set, get_test_set_list
+from ui.components.layout import page_header, sidebar_section, tabs_section
+from ui.components.cards import info_card, display_test_case_details
+from ui.components.tables import results_table
+from ui.components.forms import test_set_form, test_case_form
 
 def render_test_manager():
-    st.title("📊 测试集管理")
+    """测试集管理页面"""
+    # 添加重置按钮
+    if st.sidebar.button("🔄 重置编辑状态", key="reset_test_edit"):
+        # 清除测试集相关的会话状态
+        if "current_test_set" in st.session_state:
+            del st.session_state.current_test_set
+        if "editing_test_case" in st.session_state:
+            del st.session_state.editing_test_case
+        st.sidebar.success("编辑状态已重置!")
+        st.experimental_rerun()
     
-    # 侧边栏: 测试集列表
-    with st.sidebar:
-        st.subheader("测试集列表")
-        
+    # 使用布局组件显示页面标题
+    page_header("测试集管理", "创建和管理测试用例集", "📊")
+    
+    # 定义侧边栏测试集列表渲染函数
+    def render_test_set_list():
+        """渲染测试集列表到侧边栏"""
         test_set_list = get_test_set_list()
         
-        if st.button("➕ 新建测试集"):
+        if st.button("➕ 新建测试集", use_container_width=True):
+            # 创建新测试集
             st.session_state.current_test_set = {
                 "name": f"新测试集_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                 "description": "",
@@ -24,7 +40,7 @@ def render_test_manager():
                         "id": "case_1",
                         "description": "测试用例1",
                         "variables": {},
-                        "user_input": "这里填写用户的输入内容。",  # 新增用户输入字段
+                        "user_input": "这里填写用户的输入内容。",
                         "expected_output": "这里填写期望的模型输出内容。评估将基于此内容判断模型响应的质量。",
                         "evaluation_criteria": {
                             "accuracy": "评估响应与期望输出的匹配程度",
@@ -35,326 +51,257 @@ def render_test_manager():
                     }
                 ]
             }
+            st.session_state.editing_new_test_set = True
         
+        # 显示现有测试集列表
         if test_set_list:
-            st.write("选择现有测试集:")
+            st.markdown("### 现有测试集")
+            
             for test_set_name in test_set_list:
-                if st.button(f"📄 {test_set_name}", key=f"sel_{test_set_name}"):
-                    st.session_state.current_test_set = load_test_set(test_set_name)
+                if st.button(f"📋 {test_set_name}", key=f"sel_{test_set_name}", use_container_width=True):
+                    try:
+                        # 加载选中的测试集
+                        loaded_test_set = load_test_set(test_set_name)
+                        if loaded_test_set is None:
+                            st.error(f"无法加载测试集: {test_set_name}")
+                        else:
+                            st.session_state.current_test_set = loaded_test_set
+                            st.session_state.editing_new_test_set = False
+                    except Exception as e:
+                        st.error(f"加载测试集时出错: {str(e)}")
+        else:
+            st.info("暂无测试集，请创建新测试集")
     
-    # 主内容: 编辑区
-    if not st.session_state.current_test_set:
-        st.info("请从侧边栏创建新测试集或选择现有测试集")
+    # 使用布局组件显示侧边栏
+    sidebar_section("测试集", render_test_set_list)
+    
+    # 主内容区：测试集编辑
+    if "current_test_set" in st.session_state:
+        test_set = st.session_state.current_test_set
         
-        st.subheader("测试集示例")
-        
-        st.code("""
-{
-  "name": "情感分析测试集",
-  "description": "用于测试情感分析模型的一组测试用例",
-  "variables": {
-    "language": "中文"
-  },
-  "cases": [
-    {
-      "id": "positive_1",
-      "description": "强烈正面情感",
-      "variables": {
-        "text": "今天是我人生中最美好的一天，一切都太完美了！"
-      },
-      "expected_output": {
-        "sentiment": "positive",
-        "score": 0.9
-      },
-      "evaluation_criteria": {
-        "accuracy": "情感判断必须是positive，分数在0.8-1.0之间",
-        "completeness": "必须包含sentiment、score和analysis三个字段"
-      }
-    },
-    {
-      "id": "negative_1",
-      "description": "强烈负面情感",
-      "variables": {
-        "text": "这是我经历过的最糟糕的服务，简直太可怕了。"
-      },
-      "expected_output": {
-        "sentiment": "negative",
-        "score": 0.85
-      },
-      "evaluation_criteria": {
-        "accuracy": "情感判断必须是negative，分数在0.7-1.0之间",
-        "completeness": "必须包含sentiment、score和analysis三个字段"
-      }
-    }
-  ]
-}
-        """, language="json")
-        
-        return
-    
-    # 显示当前测试集编辑器
-    test_set = st.session_state.current_test_set
-    
-    # 基本信息编辑
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        test_set["name"] = st.text_input("测试集名称", value=test_set["name"])
-        test_set["description"] = st.text_area("测试集描述", value=test_set["description"], height=80)
-    
-    # 测试集全局变量
-    st.subheader("测试集全局变量")
-    st.caption("这些变量将应用于所有测试用例")
-    
-    # 初始化变量字典
-    if "variables" not in test_set or not isinstance(test_set["variables"], dict):
-        test_set["variables"] = {}
-    
-    # 显示现有全局变量
-    global_vars_to_remove = []
-    
-    col1, col2, col3 = st.columns([1, 2, 0.5])
-    with col1:
-        st.write("**变量名**")
-    with col2:
-        st.write("**变量值**")
-    with col3:
-        st.write("**操作**")
-    
-    for var_name, var_value in test_set["variables"].items():
-        col1, col2, col3 = st.columns([1, 2, 0.5])
-        
-        with col1:
-            st.text(var_name)
-        
-        with col2:
-            new_value = st.text_input(
-                f"值", 
-                value=var_value,
-                key=f"glob_var_{var_name}"
-            )
-            test_set["variables"][var_name] = new_value
-        
-        with col3:
-            if st.button("🗑️", key=f"del_glob_{var_name}"):
-                global_vars_to_remove.append(var_name)
-    
-    # 移除标记为删除的全局变量
-    for var_name in global_vars_to_remove:
-        if var_name in test_set["variables"]:
-            del test_set["variables"][var_name]
-    
-    # 添加新全局变量
-    with st.expander("添加新全局变量"):
-        new_var_name = st.text_input("变量名称", key="new_global_var_name")
-        new_var_value = st.text_input("变量值", key="new_global_var_value")
-        
-        if st.button("添加全局变量") and new_var_name:
-            test_set["variables"][new_var_name] = new_var_value
-            st.success(f"已添加全局变量: {new_var_name}")
-            st.experimental_rerun()
-    
-    # 测试用例列表
-    st.subheader("测试用例")
-    
-    # 初始化用例列表
-    if "cases" not in test_set or not isinstance(test_set["cases"], list):
-        test_set["cases"] = []
-    
-    # 显示用例表格概览
-    case_data = []
-    for case in test_set["cases"]:
-        case_data.append({
-            "ID": case.get("id", ""),
-            "描述": case.get("description", ""),
-            "变量数": len(case.get("variables", {})),
-            "评估标准数": len(case.get("evaluation_criteria", {}))
-        })
-    
-    if case_data:
-        st.dataframe(pd.DataFrame(case_data), use_container_width=True)
-    
-    # 用例编辑区域
-    for i, case in enumerate(test_set["cases"]):
-        with st.expander(f"测试用例 {i+1}: {case.get('description', f'用例{i+1}')}"):
-            col1, col2 = st.columns([1, 3])
-            
-            with col1:
-                case["id"] = st.text_input("用例ID", value=case.get("id", f"case_{i+1}"), key=f"id_{i}")
-            
-            with col2:
-                case["description"] = st.text_input(
-                    "用例描述", 
-                    value=case.get("description", ""), 
-                    key=f"desc_{i}"
-                )
-            
-            # 用例变量
-            st.subheader("用例变量", anchor=f"vars_{i}")
-            st.caption("这些变量仅适用于当前测试用例")
-            
-            # 初始化变量字典
-            if "variables" not in case or not isinstance(case["variables"], dict):
-                case["variables"] = {}
-            
-            # 显示现有变量
-            vars_to_remove = []
-            
-            for var_name, var_value in case["variables"].items():
-                col1, col2, col3 = st.columns([1, 2, 0.5])
-                
-                with col1:
-                    st.text(var_name)
-                
-                with col2:
-                    new_value = st.text_input(
-                        f"值", 
-                        value=var_value,
-                        key=f"var_{i}_{var_name}"
-                    )
-                    case["variables"][var_name] = new_value
-                
-                with col3:
-                    if st.button("🗑️", key=f"del_{i}_{var_name}"):
-                        vars_to_remove.append(var_name)
-            
-            # 移除标记为删除的变量
-            for var_name in vars_to_remove:
-                if var_name in case["variables"]:
-                    del case["variables"][var_name]
-            
-            # 添加新变量
-            new_var_name = st.text_input("新变量名", key=f"new_var_name_{i}")
-            new_var_value = st.text_input("新变量值", key=f"new_var_value_{i}")
-            
-            if st.button("添加变量", key=f"add_var_{i}") and new_var_name:
-                case["variables"][new_var_name] = new_var_value
-                st.success(f"已添加变量: {new_var_name}")
-                st.experimental_rerun()
-            
-            # 在期望输出前添加用户输入
-            st.subheader("用户输入", anchor=f"user_input_{i}")
-            case["user_input"] = st.text_area(
-                "用户输入内容", 
-                value=case.get("user_input", ""), 
-                height=100,
-                key=f"user_input_{i}",
-                help="这是发送给模型的用户消息内容"
-            )
-            
-            # 期望输出
-            st.subheader("期望输出", anchor=f"expected_{i}")
-            
-            case["expected_output"] = st.text_area(
-                "期望输出内容", 
-                value=case.get("expected_output", ""), 
-                height=150,
-                key=f"exp_{i}"
-            )
-            
-            # 评估标准
-            st.subheader("评估标准", anchor=f"criteria_{i}")
-            
-            # 初始化评估标准字典
-            if "evaluation_criteria" not in case or not isinstance(case["evaluation_criteria"], dict):
-                case["evaluation_criteria"] = {
-                    "accuracy": "评估准确性的标准",
-                    "completeness": "评估完整性的标准",
-                    "relevance": "评估相关性的标准",
-                    "clarity": "评估清晰度的标准"
-                }
-            
-            # 显示现有评估标准
-            criteria_to_remove = []
-            
-            for crit_name, crit_value in case["evaluation_criteria"].items():
-                col1, col2, col3 = st.columns([1, 2, 0.5])
-                
-                with col1:
-                    st.text(crit_name)
-                
-                with col2:
-                    new_value = st.text_area(
-                        f"标准描述", 
-                        value=crit_value,
-                        height=80,
-                        key=f"crit_{i}_{crit_name}"
-                    )
-                    case["evaluation_criteria"][crit_name] = new_value
-                
-                with col3:
-                    if st.button("🗑️", key=f"del_crit_{i}_{crit_name}"):
-                        criteria_to_remove.append(crit_name)
-            
-            # 移除标记为删除的评估标准
-            for crit_name in criteria_to_remove:
-                if crit_name in case["evaluation_criteria"]:
-                    del case["evaluation_criteria"][crit_name]
-            
-            # 添加新评估标准
-            new_crit_name = st.text_input("新标准名称", key=f"new_crit_name_{i}")
-            new_crit_value = st.text_area("新标准描述", height=80, key=f"new_crit_value_{i}")
-            
-            if st.button("添加评估标准", key=f"add_crit_{i}") and new_crit_name:
-                case["evaluation_criteria"][new_crit_name] = new_crit_value
-                st.success(f"已添加评估标准: {new_crit_name}")
-                st.experimental_rerun()
-            
-            # 删除用例按钮
-            if st.button("🗑️ 删除此测试用例", key=f"del_case_{i}"):
-                test_set["cases"].pop(i)
-                st.success(f"已删除测试用例")
-                st.experimental_rerun()
-    
-    # 添加新测试用例
-    if st.button("➕ 添加新测试用例"):
-        new_case = {
-            "id": f"case_{len(test_set['cases']) + 1}",
-            "description": f"测试用例 {len(test_set['cases']) + 1}",
-            "variables": {},
-            "expected_output": "",
-            "evaluation_criteria": {
-                "accuracy": "评估准确性的标准",
-                "completeness": "评估完整性的标准",
-                "relevance": "评估相关性的标准",
-                "clarity": "评估清晰度的标准"
+        # 检查测试集是否有效
+        if test_set is None:
+            st.error("无效的测试集数据。创建一个新测试集...")
+            # 创建默认测试集
+            test_set = {
+                "name": f"新测试集_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                "description": "",
+                "variables": {},
+                "cases": [
+                    {
+                        "id": "case_1",
+                        "description": "测试用例1",
+                        "variables": {},
+                        "user_input": "这里填写用户的输入内容。",
+                        "expected_output": "这里填写期望的模型输出内容。评估将基于此内容判断模型响应的质量。",
+                        "evaluation_criteria": {
+                            "accuracy": "评估响应与期望输出的匹配程度",
+                            "completeness": "评估响应是否包含所有必要信息",
+                            "relevance": "评估响应与提示词的相关性",
+                            "clarity": "评估响应的清晰度和可理解性"
+                        }
+                    }
+                ]
             }
-        }
-        test_set["cases"].append(new_case)
-        st.success("已添加新测试用例")
-        st.experimental_rerun()
-    
-    # 导入导出功能
-    st.divider()
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("导入测试集")
+            st.session_state.current_test_set = test_set
+            st.session_state.editing_new_test_set = True
         
-        upload_file = st.file_uploader("上传JSON测试集文件", type=["json"])
-        if upload_file is not None:
-            try:
-                uploaded_test_set = json.load(upload_file)
-                if st.button("确认导入"):
-                    st.session_state.current_test_set = uploaded_test_set
-                    st.success("测试集导入成功")
-                    st.experimental_rerun()
-            except json.JSONDecodeError:
-                st.error("文件格式错误，请上传有效的JSON文件")
-    
-    with col2:
-        st.subheader("导出测试集")
+        # 显示当前编辑的测试集信息
+        editing_status = "新测试集" if st.session_state.get("editing_new_test_set", False) else "现有测试集"
+        st.markdown(f"### 当前编辑: {test_set.get('name', '未命名测试集')} ({editing_status})")
         
-        if st.download_button(
-            label="导出为JSON",
-            data=json.dumps(test_set, ensure_ascii=False, indent=2),
-            file_name=f"{test_set['name']}.json",
-            mime="application/json"
-        ):
-            st.success("测试集已导出")
-    
-    # 保存按钮
-    if st.button("💾 保存测试集", type="primary"):
-        save_test_set(test_set["name"], test_set)
-        st.success(f"测试集 '{test_set['name']}' 已保存")
+        # 定义测试集基本信息和测试用例管理的标签页
+        def render_test_set_info():
+            """渲染测试集基本信息标签页"""
+            
+            # 定义保存测试集的回调函数
+            def on_test_set_save(updated_test_set):
+                try:
+                    # 保存测试集到配置
+                    save_test_set(updated_test_set)
+                    # 更新会话状态
+                    st.session_state.current_test_set = updated_test_set
+                    st.session_state.editing_new_test_set = False
+                    return True
+                except Exception as e:
+                    st.error(f"保存测试集时出错: {str(e)}")
+                    return False
+            
+            # 使用测试集表单组件
+            test_set_form(test_set, on_save=on_test_set_save, key_prefix="test_set")
+        
+        def render_test_cases():
+            """渲染测试用例管理标签页"""
+            st.markdown("## 测试用例管理")
+            
+            # 显示现有测试用例
+            cases = test_set.get("cases", [])
+            if not cases:
+                st.info("当前测试集没有测试用例，请添加新用例")
+            else:
+                st.markdown(f"### 现有测试用例 ({len(cases)}个)")
+                
+                # 创建测试用例摘要表格
+                case_summaries = []
+                for case in cases:
+                    case_summaries.append({
+                        "ID": case.get("id", ""),
+                        "描述": case.get("description", ""),
+                        "输入长度": len(case.get("user_input", "")),
+                        "期望输出长度": len(case.get("expected_output", "")),
+                        "评估标准数": len(case.get("evaluation_criteria", {}))
+                    })
+                
+                if case_summaries:
+                    df = pd.DataFrame(case_summaries)
+                    st.dataframe(df, use_container_width=True)
+            
+            # 添加新测试用例按钮
+            if st.button("➕ 添加新测试用例", key="add_new_case"):
+                # 生成唯一ID
+                case_id = f"case_{len(cases) + 1}"
+                # 检查ID是否已存在
+                existing_ids = [case.get("id") for case in cases]
+                while case_id in existing_ids:
+                    # 如果ID已存在，增加数字
+                    case_num = int(case_id.split("_")[1]) + 1
+                    case_id = f"case_{case_num}"
+                
+                # 创建新测试用例
+                new_case = {
+                    "id": case_id,
+                    "description": f"测试用例{len(cases) + 1}",
+                    "variables": {},
+                    "user_input": "这里填写用户的输入内容。",
+                    "expected_output": "这里填写期望的模型输出内容。评估将基于此内容判断模型响应的质量。",
+                    "evaluation_criteria": {
+                        "accuracy": "评估响应与期望输出的匹配程度",
+                        "completeness": "评估响应是否包含所有必要信息",
+                        "relevance": "评估响应与提示词的相关性",
+                        "clarity": "评估响应的清晰度和可理解性"
+                    }
+                }
+                
+                # 添加到测试集
+                cases.append(new_case)
+                st.session_state.current_test_set["cases"] = cases
+                # 设置为当前编辑的测试用例
+                st.session_state.editing_test_case = new_case
+                st.experimental_rerun()
+            
+            # 编辑选定的测试用例
+            st.markdown("---")
+            
+            # 如果有测试用例，显示选择器
+            if cases:
+                case_options = [f"{case.get('id', '')} - {case.get('description', '')}" for case in cases]
+                selected_case_option = st.selectbox(
+                    "选择要编辑的测试用例",
+                    case_options,
+                    key="select_case_to_edit"
+                )
+                
+                # 获取选中的测试用例
+                selected_case_id = selected_case_option.split(" - ")[0] if selected_case_option else None
+                selected_case = next((case for case in cases if case.get("id") == selected_case_id), None)
+                
+                if selected_case:
+                    st.session_state.editing_test_case = selected_case
+            
+            # 如果正在编辑测试用例，显示编辑表单
+            if "editing_test_case" in st.session_state and st.session_state.editing_test_case:
+                edit_case = st.session_state.editing_test_case
+                
+                st.markdown(f"### 编辑测试用例: {edit_case.get('id', '')} - {edit_case.get('description', '')}")
+                
+                # 定义保存测试用例的回调函数
+                def on_case_save(updated_case):
+                    # 更新测试集中的用例
+                    for i, case in enumerate(cases):
+                        if case.get("id") == updated_case.get("id"):
+                            cases[i] = updated_case
+                            break
+                    
+                    # 如果是新用例（不在列表中），则添加
+                    if not any(case.get("id") == updated_case.get("id") for case in cases):
+                        cases.append(updated_case)
+                    
+                    # 更新会话状态
+                    st.session_state.current_test_set["cases"] = cases
+                    st.session_state.editing_test_case = updated_case
+                    return True
+                
+                # 定义删除测试用例的回调函数
+                def on_case_delete(case_id):
+                    # 从测试集中删除用例
+                    for i, case in enumerate(cases):
+                        if case.get("id") == case_id:
+                            del cases[i]
+                            break
+                    
+                    # 更新会话状态
+                    st.session_state.current_test_set["cases"] = cases
+                    if "editing_test_case" in st.session_state:
+                        del st.session_state.editing_test_case
+                    return True
+                
+                # 使用测试用例表单组件
+                test_case_form(edit_case, on_save=on_case_save, on_delete=on_case_delete, key_prefix="edit_case")
+            else:
+                if cases:
+                    st.info("请从上方选择一个测试用例进行编辑")
+                else:
+                    st.info("请先添加一个测试用例")
+        
+        def render_test_preview():
+            """渲染测试集预览标签页"""
+            st.markdown("## 测试集预览")
+            
+            # 显示测试集基本信息
+            info_card(
+                "测试集信息",
+                f"""
+                **名称**: {test_set.get('name', '未命名')}
+                
+                **描述**: {test_set.get('description', '无描述')}
+                
+                **测试用例数**: {len(test_set.get('cases', []))}
+                """
+            )
+            
+            # 显示测试用例列表
+            st.markdown("### 测试用例列表")
+            cases = test_set.get("cases", [])
+            
+            if not cases:
+                st.info("当前测试集没有测试用例")
+            else:
+                for i, case in enumerate(cases):
+                    with st.expander(f"{case.get('id', '')} - {case.get('description', '')}", expanded=i==0):
+                        display_test_case_details(case, key_prefix=f"preview_case_{i}")
+        
+        # 设置标签页
+        tabs_config = [
+            {"title": "基本信息", "content": render_test_set_info},
+            {"title": "测试用例管理", "content": render_test_cases},
+            {"title": "预览", "content": render_test_preview}
+        ]
+        
+        tabs_section(tabs_config)
+    else:
+        # 如果没有选择测试集，显示使用提示
+        st.info("👈 请从侧边栏选择一个现有测试集或创建新测试集")
+        
+        info_card(
+            "测试集说明", 
+            """
+            **测试集**是用于评估提示词效果的一组测试用例。通过创建测试集，您可以：
+            
+            1. **系统化**测试不同场景下的提示词效果
+            2. **标准化**评估标准和期望输出
+            3. **批量评估**多个模型或提示词的性能
+            4. **量化比较**优化前后的效果变化
+            
+            点击左侧的"新建测试集"按钮开始创建您的第一个测试集！
+            """
+        )
