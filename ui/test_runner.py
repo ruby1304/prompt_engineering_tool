@@ -1,687 +1,346 @@
-# ui/test_runner.py
 import streamlit as st
+import json
 import pandas as pd
 import asyncio
 from datetime import datetime
 import time
-import json
+# 修改导入方式
 from config import get_template_list, load_template, get_test_set_list, load_test_set, save_result, get_available_models
 from models.api_clients import get_client, get_provider_from_model
 from models.token_counter import count_tokens, estimate_cost
 from utils.evaluator import PromptEvaluator
-from utils.common import run_test
-from ui.components.layout import page_header, tabs_section
-from ui.components.selectors import select_single_model, select_multiple_models, select_template, select_test_set
-from ui.components.cards import info_card, result_card, display_test_summary, display_response_tabs, display_evaluation_results
-from ui.components.tables import results_table
-from ui.components.forms import test_config_form
 
 def render_test_runner():
-    """测试运行页面"""
-    # 使用布局组件显示页面标题
-    page_header("测试运行", "运行提示词测试并评估结果", "🧪")
+    st.title("🧪 测试运行")
     
-    # 初始化会话状态
-    if "test_mode" not in st.session_state:
-        st.session_state.test_mode = "single_prompt_multi_model"
+    # 选择要测试的提示词模板和测试集
+    col1, col2 = st.columns(2)
     
-    if "test_results" not in st.session_state:
-        st.session_state.test_results = None
-    
-    if "test_is_running" not in st.session_state:
-        st.session_state.test_is_running = False
-    
-    # 定义各标签页渲染函数
-    def render_test_config():
-        """渲染测试配置标签页"""
-        st.markdown("## 测试配置")
+    with col1:
+        st.subheader("选择提示词模板")
         
-        # 测试模式选择
+        template_list = get_template_list()
+        
+        if not template_list:
+            st.warning("未找到提示词模板，请先创建模板")
+            return
+        
+        selected_templates = []
+        
+        if "test_mode" not in st.session_state:
+            st.session_state.test_mode = "single_prompt_multi_model"
+        
         test_mode = st.radio(
-            "测试模式", 
+            "测试模式",
             ["single_prompt_multi_model", "multi_prompt_single_model"],
-            format_func=lambda x: "单模板多模型" if x == "single_prompt_multi_model" else "多模板单模型",
-            key="test_mode_selector",
-            horizontal=True
+            format_func=lambda x: "单提示词多模型" if x == "single_prompt_multi_model" else "多提示词单模型"
         )
-        
         st.session_state.test_mode = test_mode
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("选择提示词模板")
-            template_list = get_template_list()
-            
-            if not template_list:
-                st.warning("未找到提示词模板，请先创建模板")
-                return
-            
-            # 根据测试模式选择单个或多个模板
-            if test_mode == "single_prompt_multi_model":
-                selected_template = select_template(
-                    template_list, 
-                    "选择模板", 
-                    "test_template", 
-                    "选择要测试的提示词模板"
-                )
-                if selected_template:
-                    st.session_state.selected_templates = [selected_template]
-                
-                # 显示选中模板的信息
-                if "selected_templates" in st.session_state and st.session_state.selected_templates:
-                    try:
-                        template = load_template(st.session_state.selected_templates[0])
-                        if template:
-                            st.success(f"已选择模板: {template.get('name', '')}")
-                            with st.expander("查看模板详情", expanded=False):
-                                st.markdown(f"**描述**: {template.get('description', '无描述')}")
-                                st.markdown("**模板内容**:")
-                                st.code(template.get("template", ""), language="markdown")
-                                
-                                # 显示变量
-                                if template.get("variables"):
-                                    st.markdown("**变量**:")
-                                    for var_name, var_config in template.get("variables", {}).items():
-                                        st.markdown(f"- **{var_name}**: {var_config.get('description', '')} (默认: `{var_config.get('default', '')}`)")
-                    except Exception as e:
-                        st.error(f"加载模板时出错: {str(e)}")
-            else:
-                selected_templates = select_template(
-                    template_list, 
-                    "选择多个模板", 
-                    "test_templates", 
-                    "选择要测试的多个提示词模板",
-                    allow_multiple=True
-                )
-                st.session_state.selected_templates = selected_templates
-                
-                # 显示选中模板数量
-                if "selected_templates" in st.session_state and st.session_state.selected_templates:
-                    st.success(f"已选择 {len(st.session_state.selected_templates)} 个模板")
-                    with st.expander("查看选中的模板", expanded=False):
-                        for template_name in st.session_state.selected_templates:
-                            st.markdown(f"- {template_name}")
-        
-        with col2:
-            st.subheader("选择测试集")
-            test_set_list = get_test_set_list()
-            
-            if not test_set_list:
-                st.warning("未找到测试集，请先创建测试集")
-                return
-            
-            selected_test_set = select_test_set(
-                test_set_list, 
-                "选择测试集", 
-                "test_set", 
-                "选择要使用的测试集"
-            )
-            st.session_state.selected_test_set = selected_test_set
-            
-            # 显示选中测试集的信息
-            if "selected_test_set" in st.session_state and st.session_state.selected_test_set:
-                try:
-                    test_set = load_test_set(st.session_state.selected_test_set)
-                    if test_set:
-                        st.success(f"已选择测试集: {test_set.get('name', '')}")
-                        with st.expander("查看测试集详情", expanded=False):
-                            st.markdown(f"**描述**: {test_set.get('description', '无描述')}")
-                            st.markdown(f"**测试用例数**: {len(test_set.get('cases', []))}")
-                            
-                            # 显示测试用例摘要
-                            if test_set.get("cases"):
-                                test_cases = []
-                                for case in test_set.get("cases", []):
-                                    test_cases.append({
-                                        "ID": case.get("id", ""),
-                                        "描述": case.get("description", ""),
-                                        "评估标准数": len(case.get("evaluation_criteria", {}))
-                                    })
-                                
-                                if test_cases:
-                                    st.dataframe(pd.DataFrame(test_cases), use_container_width=True)
-                except Exception as e:
-                    st.error(f"加载测试集时出错: {str(e)}")
-    
-    def render_model_selection():
-        """渲染模型选择标签页"""
-        st.markdown("## 模型选择")
-        
-        # 获取测试模式
-        test_mode = st.session_state.get("test_mode", "single_prompt_multi_model")
-        
         if test_mode == "single_prompt_multi_model":
-            st.markdown("### 选择多个模型")
-            st.markdown("在此模式下，将使用单个提示词模板测试多个模型")
-            
-            selected_models = select_multiple_models(
-                "test_models", 
-                "选择要测试的模型（可多选）"
+            selected_template = st.selectbox(
+                "选择提示词模板",
+                template_list
             )
-            
-            st.session_state.selected_models = selected_models
-            
-            # 显示选中的模型
-            if selected_models:
-                st.success(f"已选择 {len(selected_models)} 个模型")
-                with st.expander("查看选中的模型", expanded=False):
-                    for model_info in selected_models:
-                        st.markdown(f"- {model_info['model']} ({model_info['provider']})")
-            else:
-                st.warning("请选择至少一个模型")
+            if selected_template:
+                selected_templates = [selected_template]
         else:
-            st.markdown("### 选择单个模型")
-            st.markdown("在此模式下，将使用多个提示词模板测试单个模型")
-            
-            model, provider = select_single_model(
-                "test_model", 
-                "选择要测试的模型"
-            )
-            
-            if model and provider:
-                st.session_state.selected_models = [{"model": model, "provider": provider}]
-                st.success(f"已选择模型: {model} ({provider})")
-            else:
-                st.warning("请选择一个模型")
+            # 多选提示词模板
+            for template_name in template_list:
+                if st.checkbox(template_name, key=f"temp_{template_name}"):
+                    selected_templates.append(template_name)
     
-    def render_test_execution():
-        """渲染测试执行标签页"""
-        st.markdown("## 测试执行")
+    with col2:
+        st.subheader("选择测试集")
         
-        # 检查是否已选择所需元素
-        has_templates = "selected_templates" in st.session_state and st.session_state.selected_templates
-        has_test_set = "selected_test_set" in st.session_state and st.session_state.selected_test_set
-        has_models = "selected_models" in st.session_state and st.session_state.selected_models
+        test_set_list = get_test_set_list()
         
-        if not (has_templates and has_test_set and has_models):
-            missing = []
-            if not has_templates:
-                missing.append("提示词模板")
-            if not has_test_set:
-                missing.append("测试集")
-            if not has_models:
-                missing.append("模型")
-            
-            st.warning(f"请先在前面的标签页中选择{', '.join(missing)}")
+        if not test_set_list:
+            st.warning("未找到测试集，请先创建测试集")
             return
         
-        # 显示测试配置摘要
-        with st.expander("测试配置摘要", expanded=True):
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.markdown("**提示词模板**")
-                for template_name in st.session_state.selected_templates:
-                    st.markdown(f"- {template_name}")
-            
-            with col2:
-                st.markdown("**测试集**")
-                st.markdown(f"- {st.session_state.selected_test_set}")
-                
-                # 加载测试集信息
-                try:
-                    test_set = load_test_set(st.session_state.selected_test_set)
-                    if test_set:
-                        st.markdown(f"- 测试用例数: {len(test_set.get('cases', []))}")
-                except Exception:
-                    pass
-            
-            with col3:
-                st.markdown("**模型**")
-                for model_info in st.session_state.selected_models:
-                    st.markdown(f"- {model_info['model']} ({model_info['provider']})")
-        
-        # 测试选项设置
-        with st.expander("测试选项", expanded=True):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # 模型参数
-                st.markdown("**模型参数**")
-                temperature = st.slider(
-                    "Temperature", 
-                    min_value=0.0, 
-                    max_value=1.0, 
-                    value=0.7, 
-                    step=0.1,
-                    help="控制输出的随机性，较高的值将使输出更随机，较低的值使输出更确定"
-                )
-                
-                max_tokens = st.number_input(
-                    "最大输出Token数", 
-                    min_value=1, 
-                    max_value=4096, 
-                    value=1024,
-                    help="限制模型响应的最大长度"
-                )
-                
-                # 添加测试运行次数配置
-                num_runs = st.number_input(
-                    "每个配置运行次数", 
-                    min_value=1, 
-                    max_value=10, 
-                    value=1,
-                    help="每个模型-模板-测试用例组合运行的次数"
-                )
-            
-            with col2:
-                # 评估选项
-                st.markdown("**评估选项**")
-                run_evaluation = st.checkbox(
-                    "自动评估响应", 
-                    value=True,
-                    help="使用评估模型对生成的响应进行评分"
-                )
-                
-                if run_evaluation:
-                    # 使用统一的评估模型选择器
-                    from ui.components.selectors import select_evaluator_model
-                    evaluator_model, evaluator_provider = select_evaluator_model(
-                        "test_evaluator", 
-                        "选择用于评估响应质量的模型"
-                    )
-                else:
-                    evaluator_model = None
-                    evaluator_provider = None
-        
-        # 运行测试按钮
-        run_col1, run_col2 = st.columns([2, 1])
-        
-        with run_col1:
-            if st.button("▶️ 开始测试", key="start_test_btn", use_container_width=True, type="primary"):
-                # 设置状态为正在运行
-                st.session_state.test_is_running = True
-                st.session_state.test_results = None
-                
-                # 收集测试配置
-                test_config = {
-                    "templates": st.session_state.selected_templates,
-                    "test_set": st.session_state.selected_test_set,
-                    "models": st.session_state.selected_models,
-                    "params": {
-                        "temperature": temperature,
-                        "max_tokens": max_tokens,
-                        "num_runs": num_runs  # 添加运行次数
-                    },
-                    "evaluation": {
-                        "run": run_evaluation,
-                        "model": evaluator_model,
-                        "provider": evaluator_provider
-                    },
-                    "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S")
-                }
-                
-                # 存储测试配置
-                st.session_state.test_config = test_config
-                st.experimental_rerun()
-        
-        with run_col2:
-            if st.button("🔄 重置", key="reset_test_btn", use_container_width=True):
-                # 重置测试状态
-                st.session_state.test_is_running = False
-                st.session_state.test_results = None
-                st.session_state.test_config = None
-                st.experimental_rerun()
-        
-        # 执行测试
-        if st.session_state.get("test_is_running", False):
-            with st.spinner("正在运行测试..."):
-                # 使用asyncio运行异步测试函数
-                test_results = run_test_with_progress(st.session_state.test_config)
-                st.session_state.test_results = test_results
-                st.session_state.test_is_running = False
-                
-                if test_results:
-                    # 保存测试结果
-                    result_name = f"test_results_{st.session_state.test_config['timestamp']}.json"
-                    save_result(result_name, test_results)
-                    st.session_state.last_result = result_name
-                    
-                    # 显示成功消息
-                    st.success("测试完成！")
-                    
-                    # 设置当前标签页索引为结果标签页（索引为3）
-                    st.session_state.active_tab = 3
-                else:
-                    st.error("测试执行失败，请检查日志")
-                
-                st.experimental_rerun()
-    
-    def render_test_results():
-        """渲染测试结果标签页"""
-        st.markdown("## 测试结果")
-        
-        # 检查是否有测试结果
-        if not st.session_state.get("test_results"):
-            st.info('尚未运行测试或没有测试结果。请在"测试执行"标签页运行测试。')
-            return
-        
-        # 获取测试结果
-        results = st.session_state.test_results
-        
-        # 显示测试结果摘要
-        st.markdown("### 测试结果摘要")
-        
-        # 创建摘要卡片
-        summary_cols = st.columns(4)
-        
-        with summary_cols[0]:
-            result_card(
-                "测试完成时间", 
-                results.get("timestamp", "未知"),
-                "测试执行的时间戳"
-            )
-        
-        with summary_cols[1]:
-            result_card(
-                "测试模板数", 
-                len(results.get("templates", {})),
-                "参与测试的提示词模板数量"
-            )
-        
-        with summary_cols[2]:
-            result_card(
-                "测试用例数", 
-                len(results.get("test_cases", [])),
-                "执行的测试用例数量"
-            )
-        
-        with summary_cols[3]:
-            result_card(
-                "测试模型数", 
-                len(results.get("models", [])),
-                "参与测试的模型数量"
-            )
-        
-        # 显示测试用例结果
-        st.markdown("### 测试用例结果")
-        
-        # 创建测试用例选择器
-        test_cases = results.get("test_cases", [])
-        if not test_cases:
-            st.warning("没有找到测试用例结果")
-            return
-        
-        case_options = [f"{case.get('id', '')} - {case.get('description', '')}" for case in test_cases]
-        selected_case_option = st.selectbox(
-            "选择测试用例查看详细结果",
-            case_options,
-            key="select_result_case"
+        selected_test_set = st.selectbox(
+            "选择测试集",
+            test_set_list
         )
+    
+    if not selected_templates or not selected_test_set:
+        st.warning("请选择提示词模板和测试集")
+        return
+    
+    # 加载选择的模板和测试集
+    templates = [load_template(name) for name in selected_templates]
+    test_set = load_test_set(selected_test_set)
+    
+    # 模型选择和参数设置
+    st.subheader("模型和参数设置")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("选择模型")
         
-        # 获取选中的测试用例
-        selected_case_id = selected_case_option.split(" - ")[0] if selected_case_option else None
-        selected_case = next((case for case in test_cases if case.get("id") == selected_case_id), None)
-        
-        if selected_case:
-            # 显示用例详情
-            st.markdown(f"#### 测试用例: {selected_case.get('description', '')}")
+        # 使用组件选择模型
+        if test_mode == "single_prompt_multi_model":
+            # 多模型选择
+            from ui.components import select_multiple_models
+            selected_model_pairs = select_multiple_models(key_prefix="test_run", label="选择要测试的模型")
             
-            # 创建响应标签页
-            if "responses" in selected_case and selected_case["responses"]:
-                display_response_tabs(selected_case["responses"], key_prefix=f"case_{selected_case_id}")
-            else:
-                st.info("此测试用例没有响应数据")
+            # 提取模型名称和提供商信息
+            selected_models = [model for model, _ in selected_model_pairs]
+            model_provider_map = {model: provider for model, provider in selected_model_pairs}
             
-            # 显示评估结果
-            if "evaluation" in selected_case:
-                st.markdown("#### 评估结果")
-                display_evaluation_results(selected_case["evaluation"], key_prefix=f"eval_{selected_case_id}")
-            
-        # 模型比较
-        st.markdown("### 模型比较")
-        
-        # 准备模型比较数据
-        models_data = prepare_model_comparison_data(results)
-        
-        if models_data:
-            # 创建模型比较表格
-            st.dataframe(pd.DataFrame(models_data), use_container_width=True)
-            
-            # 可以添加图表展示
-            # TODO: 添加模型比较图表
+            # 保存到会话状态
+            st.session_state.model_provider_map = model_provider_map
         else:
-            st.info("无法创建模型比较数据，可能缺少评估结果")
+            # 单模型选择
+            from ui.components import select_single_model
+            model, provider = select_single_model(key_prefix="test_run_single", help_text="选择用于测试的模型")
+            
+            selected_models = [model] if model else []
+            if model:
+                st.session_state.model_provider_map = {model: provider}
+        
+        if not selected_models:
+            st.warning("请至少选择一个模型")
+            return
     
-    # 设置标签页
-    tabs_config = [
-        {"title": "测试配置", "content": render_test_config},
-        {"title": "模型选择", "content": render_model_selection},
-        {"title": "测试执行", "content": render_test_execution},
-        {"title": "测试结果", "content": render_test_results}
-    ]
     
-    tabs_section(tabs_config)
-
-# 辅助函数
-def run_test_with_progress(test_config):
-    """运行测试并显示进度"""
-    # 加载测试集
-    test_set = load_test_set(test_config["test_set"])
-    if not test_set or "cases" not in test_set:
-        st.error("无法加载测试集或测试集不包含测试用例")
-        return None
+    with col2:
+        st.subheader("运行参数")
+        
+        temperature = st.slider("Temperature", 0.0, 2.0, 0.7, 0.1)
+        max_tokens = st.slider("最大输出Token", 100, 4000, 1000, 100)
+        repeat_count = st.slider("每个测试重复次数", 1, 5, 2, 1)
     
-    # 准备结果结构
-    results = {
-        "timestamp": test_config["timestamp"],
-        "templates": {},
-        "models": test_config["models"],
-        "test_cases": [],
-        "total_tokens": 0,
-        "total_responses": 0,
-        "total_evaluations": 0
+    # 预览测试配置
+    st.subheader("测试预览")
+    
+    # 获取模型显示信息
+    model_display_info = []
+    for model in selected_models:
+        provider = st.session_state.model_provider_map.get(model, "未知提供商")
+        model_display_info.append(f"{model} ({provider})")
+    
+    preview_data = {
+        "提示词模板": [t["name"] for t in templates],
+        "测试集": test_set["name"],
+        "测试用例数": len(test_set["cases"]),
+        "选择的模型": model_display_info,
+        "重复次数": repeat_count
     }
     
-    # 加载模板
-    for template_name in test_config["templates"]:
-        template = load_template(template_name)
-        if template:
-            results["templates"][template_name] = template
+    st.json(preview_data)
     
-    # 准备测试用例
+    # 估算测试成本和时间
+    total_calls = len(templates) * len(test_set["cases"]) * len(selected_models) * repeat_count
+    avg_token_count = 1000  # 假设平均每次调用1000个token
+    total_tokens = total_calls * avg_token_count
+    
+    # 估算成本（非常粗略）
+    estimated_cost = sum([estimate_cost(avg_token_count, model) * len(test_set["cases"]) * repeat_count for model in selected_models])
+    
+    # 估算时间（假设每次调用平均2秒）
+    estimated_time = total_calls * 2
+    
+    st.info(f"""
+    ### 测试估算
+    - 总API调用次数: {total_calls}
+    - 预估Token数量: {total_tokens}
+    - 预估成本: ${estimated_cost:.2f}
+    - 预估完成时间: {estimated_time} 秒 (约 {estimated_time//60}分{estimated_time%60}秒)
+    """)
+    
+    # 运行测试
+    if st.button("▶️ 运行测试", type="primary"):
+        run_tests(
+            templates=templates,
+            test_set=test_set,
+            selected_models=selected_models,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            repeat_count=repeat_count,
+            test_mode=test_mode
+        )
+
+def run_tests(templates, test_set, selected_models, temperature, max_tokens, repeat_count, test_mode):
+    """运行测试并显示进度"""
+    st.subheader("测试运行中...")
+    
+    # 创建进度条
     progress_bar = st.progress(0)
     status_text = st.empty()
+    result_area = st.empty()
     
-    total_cases = len(test_set["cases"])
-    total_models = len(test_config["models"])
-    total_templates = len(test_config["templates"])
-    num_runs = test_config["params"].get("num_runs", 1)  # 获取运行次数，默认为1
+    # 计算总任务数
+    total_tasks = len(templates) * len(test_set["cases"]) * len(selected_models) * repeat_count
+    completed_tasks = 0
     
-    total_tests = total_cases * total_models * total_templates
-    completed_tests = 0
-    
-    # 处理每个测试用例
-    for i, case in enumerate(test_set["cases"]):
-        case_result = {
-            "id": case.get("id", f"case_{i}"),
-            "description": case.get("description", ""),
-            "user_input": case.get("user_input", ""),
-            "expected_output": case.get("expected_output", ""),
-            "evaluation_criteria": case.get("evaluation_criteria", {}),
-            "responses": []
+    # 准备结果存储
+    results = {}
+    for template in templates:
+        results[template["name"]] = {
+            "template": template,
+            "test_set": test_set["name"],
+            "models": selected_models,
+            "params": {
+                "temperature": temperature,
+                "max_tokens": max_tokens
+            },
+            "test_cases": []
         }
+    
+    # 设置评估器
+    evaluator = PromptEvaluator()
+    
+    # 运行测试
+    for template in templates:
+        template_name = template["name"]
+        status_text.text(f"正在测试提示词模板: {template_name}")
         
-        status_text.text(f"测试用例 {i+1}/{total_cases}: {case.get('description', '')}")
-        
-        # 对每个模板和模型组合运行测试
-        for template_name in test_config["templates"]:
-            template = results["templates"].get(template_name)
-            if not template:
-                st.warning(f"无法加载模板: {template_name}，跳过")
-                continue
+        for case in test_set["cases"]:
+            case_id = case["id"]
+            status_text.text(f"正在测试模板 '{template_name}' 的用例 '{case_id}'")
             
-            for model_info in test_config["models"]:
-                model = model_info["model"]
-                provider = model_info["provider"]
+            # 渲染提示词（替换变量）
+            prompt_template = template["template"]
+            
+            # 应用全局变量和用例变量
+            variables = {**test_set.get("variables", {}), **case.get("variables", {})}
+            
+            # 如果变量未提供，使用提示词模板中的默认值
+            for var_name in template.get("variables", {}):
+                if var_name not in variables:
+                    variables[var_name] = template["variables"][var_name].get("default", "")
+
+            # 应用变量到提示词模板  
+            for var_name, var_value in variables.items():
+                prompt_template = prompt_template.replace(f"{{{{{var_name}}}}}", var_value)
+            
+            # 获取用户输入
+            user_input = case.get("user_input", "")
+            
+            # 保存当前测试用例的结果
+            case_results = {
+                "case_id": case_id,
+                "case_description": case.get("description", ""),
+                "prompt": prompt_template,
+                "user_input": user_input,
+                "expected_output": case.get("expected_output", ""),
+                "model_responses": [],
+                "evaluation": None
+            }
+            
+            # 为每个模型运行测试
+            for model in selected_models:
+                # 获取模型对应的提供商
+                if hasattr(st.session_state, 'model_provider_map') and model in st.session_state.model_provider_map:
+                    provider = st.session_state.model_provider_map[model]
+                else:
+                    # 兼容旧代码，尝试从模型名称推断提供商
+                    try:
+                        provider = get_provider_from_model(model)
+                    except ValueError:
+                        st.error(f"无法确定模型 '{model}' 的提供商")
+                        continue
                 
-                status_text.text(f"测试用例 {i+1}/{total_cases}, 模板: {template_name}, 模型: {model}")
+                client = get_client(provider)
                 
-                try:
-                    # 调用修改后的run_test函数
-                    test_results = run_test(
-                        template=template,  # 提示词模板
-                        model=model,  # 模型名称
-                        test_set={  # 单独为这个测试用例创建一个测试集
-                            "cases": [case],
-                            "variables": test_set.get("variables", {})
-                        },
-                        model_provider=provider,  # 模型提供商
-                        repeat_count=num_runs,  # 重复次数
-                        temperature=test_config["params"].get("temperature", 0.7)  # 温度参数
-                    )
+                # 重复测试
+                for i in range(repeat_count):
+                    status_text.text(f"正在测试模板 '{template_name}' 的用例 '{case_id}', 模型 '{model}', 重复 #{i+1}")
                     
-                    # 处理测试结果
-                    if test_results and "test_cases" in test_results and test_results["test_cases"]:
-                        case_test_results = test_results["test_cases"][0]  # 只有一个测试用例
+                    try:
+                        # 修改调用模型API的方式，将提示词作为系统提示，用户输入作为用户消息
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
                         
-                        # 提取所有响应
-                        for resp_data in case_test_results.get("responses", []):
-                            # 创建响应对象
-                            response = {
-                                "model": model,
-                                "provider": provider,
-                                "template": template_name,
-                                "content": resp_data.get("response", ""),
-                                "error": resp_data.get("error"),
-                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "run_index": resp_data.get("attempt", 1),
-                                "tokens": {
-                                    "prompt": resp_data.get("usage", {}).get("prompt_tokens", 0),
-                                    "completion": resp_data.get("usage", {}).get("completion_tokens", 0),
-                                    "total": resp_data.get("usage", {}).get("total_tokens", 0)
-                                }
-                            }
-                            
-                            # 添加评估结果
-                            if resp_data.get("evaluation"):
-                                response["evaluation"] = resp_data["evaluation"]
-                                results["total_evaluations"] += 1
-                            
-                            # 添加到响应列表
-                            case_result["responses"].append(response)
-                            results["total_responses"] += 1
-                            
-                            # 更新token统计
-                            results["total_tokens"] += response["tokens"]["total"]
-                
+                        # 根据不同客户端类型构建不同的消息格式
+                        if provider in ["openai", "xai"]:
+                            response = loop.run_until_complete(client.generate_with_messages(
+                                [
+                                    {"role": "system", "content": prompt_template},
+                                    {"role": "user", "content": user_input}
+                                ],
+                                model, 
+                                {"temperature": temperature, "max_tokens": max_tokens}
+                            ))
+                        else:
+                            # 对于其他API客户端，我们可能需要调整消息格式或者合并内容
+                            combined_prompt = f"System: {prompt_template}\n\nUser: {user_input}"
+                            response = loop.run_until_complete(client.generate(
+                                combined_prompt, 
+                                model, 
+                                {"temperature": temperature, "max_tokens": max_tokens}
+                            ))
+                        
+                        loop.close()
+                        
+                        # 存储响应
+                        case_results["model_responses"].append({
+                            "model": model,
+                            "attempt": i+1,
+                            "response": response.get("text", ""),
+                            "error": response.get("error", None),
+                            "usage": response.get("usage", {})
+                        })
+                        
+                    except Exception as e:
+                        # 存储错误
+                        case_results["model_responses"].append({
+                            "model": model,
+                            "attempt": i+1,
+                            "response": "",
+                            "error": str(e),
+                            "usage": {}
+                        })
+                    
+                    # 更新进度
+                    completed_tasks += 1
+                    progress_bar.progress(completed_tasks / total_tasks)
+                    
+                    # 模拟API调用延迟
+                    time.sleep(0.5)
+            
+            # 对测试结果进行评估
+            # 选择最后一次响应进行评估
+            response_text = ""
+            for resp in reversed(case_results["model_responses"]):
+                if not resp.get("error") and resp.get("response"):
+                    response_text = resp.get("response")
+                    break
+            if response_text:
+                try:
+                    # 使用同步方法替代
+                    evaluation = evaluator.evaluate_response_sync(
+                        response_text,
+                        case.get("expected_output", ""),
+                        case.get("evaluation_criteria", {}),
+                        prompt_template
+                    )
+                    case_results["evaluation"] = evaluation
                 except Exception as e:
-                    st.error(f"运行测试时出错 (模板: {template_name}, 模型: {model}): {str(e)}")
-                    # 添加错误信息
-                    case_result["responses"].append({
-                        "model": model,
-                        "provider": provider,
-                        "template": template_name,
-                        "content": f"错误: {str(e)}",
-                        "error": True,
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "run_index": 1
-                    })
-                
-                # 更新进度
-                completed_tests += 1
-                progress_bar.progress(completed_tests / total_tests)
-        
-        # 计算用例的整体评估（如果有多个响应）
-        if case_result["responses"] and any("evaluation" in resp for resp in case_result["responses"]):
-            # 收集有评估结果的响应
-            evaluated_responses = [resp for resp in case_result["responses"] if "evaluation" in resp]
+                    case_results["evaluation"] = {"error": str(e)}
             
-            if evaluated_responses:
-                # 计算平均分数
-                overall_scores = [resp["evaluation"].get("overall_score", 0) for resp in evaluated_responses]
-                dimension_scores = {}
-                
-                # 收集所有维度分数
-                for resp in evaluated_responses:
-                    for dim, score in resp["evaluation"].get("scores", {}).items():
-                        if dim not in dimension_scores:
-                            dimension_scores[dim] = []
-                        dimension_scores[dim].append(score)
-                
-                # 计算平均维度分数
-                avg_dimension_scores = {
-                    dim: sum(scores) / len(scores) 
-                    for dim, scores in dimension_scores.items()
-                }
-                
-                # 添加整体评估
-                case_result["evaluation"] = {
-                    "overall_score": sum(overall_scores) / len(overall_scores),
-                    "scores": avg_dimension_scores,
-                    "num_responses": len(evaluated_responses)
-                }
-        
-        # 添加用例结果
-        results["test_cases"].append(case_result)
-    
-    # 清除进度显示
-    progress_bar.empty()
-    status_text.empty()
-    
-    # 计算整体平均分数
-    if results["total_evaluations"] > 0:
-        # 收集所有评分
-        all_scores = []
-        for case in results["test_cases"]:
-            if "evaluation" in case and "overall_score" in case["evaluation"]:
-                all_scores.append(case["evaluation"]["overall_score"])
-        
-        if all_scores:
-            results["average_score"] = sum(all_scores) / len(all_scores)
-            results["max_score"] = max(all_scores)
-            results["min_score"] = min(all_scores)
-    
-    return results
-
-
-def prepare_model_comparison_data(results):
-    """准备模型比较数据"""
-    if not results or "test_cases" not in results:
-        return []
-    
-    model_scores = {}
-    
-    # 收集每个模型在每个用例中的评分
-    for case in results.get("test_cases", []):
-        for response in case.get("responses", []):
-            model = response.get("model")
-            template = response.get("template")
-            run_index = response.get("run_index", 1)
+            # 添加到结果
+            results[template_name]["test_cases"].append(case_results)
             
-            if "evaluation" not in response:
-                continue
-            
-            eval_result = response["evaluation"]
-            overall_score = eval_result.get("overall_score", 0)
-            
-            # 初始化模型数据
-            if model not in model_scores:
-                model_scores[model] = {
-                    "模型": model,
-                    "平均得分": 0,
-                    "响应数": 0,
-                    "响应总数": 0,
-                    "运行次数": set()  # 使用集合跟踪不同的运行次数
-                }
-            
-            # 更新统计信息
-            model_scores[model]["响应总数"] += 1
-            model_scores[model]["运行次数"].add(run_index)
-            
-            if overall_score > 0:
-                model_scores[model]["响应数"] += 1
-                # 累计得分
-                current_total = model_scores[model]["平均得分"] * (model_scores[model]["响应数"] - 1)
-                model_scores[model]["平均得分"] = (current_total + overall_score) / model_scores[model]["响应数"]
+            # 显示中间结果
+            result_summary = f"已完成: {completed_tasks}/{total_tasks} 测试"
+            result_area.text(result_summary)
     
-    # 转换为列表
-    model_data = list(model_scores.values())
+    # 测试完成
+    progress_bar.progress(1.0)
+    status_text.text("✅ 测试完成!")
     
-    # 格式化平均得分和运行次数
-    for item in model_data:
-        item["平均得分"] = f"{item['平均得分']:.2f}"
-        item["运行次数"] = len(item["运行次数"])  # 转换集合为数量
+    # 保存结果
+    result_name = f"test_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    save_result(result_name, results)
     
-    return model_data
+    st.success(f"测试结果已保存: {result_name}")
+    
+    # 建议跳转到结果查看页面
+    st.session_state.last_result = result_name
+    if st.button("📊 查看详细结果"):
+        st.session_state.page = "results_viewer"
+        st.experimental_rerun()
