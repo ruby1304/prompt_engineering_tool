@@ -161,7 +161,7 @@ def render_prompt_optimization():
         
         for i, case in enumerate(test_results.get("test_cases", [])):
             with st.expander(f"测试用例 {i+1}: {case.get('case_description', case.get('case_id', ''))}"):
-                display_test_case_details(case)
+                display_test_case_details(case, inside_expander=True)
         
         # 添加清除结果按钮
         if st.button("🗑️ 清除测试结果", key="clear_results"):
@@ -317,8 +317,6 @@ def display_optimized_prompts(optimized_prompts, template, model, model_provider
     if not optimized_prompts:
         st.warning("没有优化提示词可显示")
         return
-        
-    st.success(f"生成了 {len(optimized_prompts)} 个优化提示词版本")
     
     # 只有在未选择自动评估时才显示批量评估按钮
     if st.button("🔬 批量评估所有优化版本", type="primary"):
@@ -345,33 +343,40 @@ def display_optimized_prompts(optimized_prompts, template, model, model_provider
     # 显示各个优化提示词版本
     for i, opt_prompt in enumerate(optimized_prompts):
         with st.expander(f"优化版本 {i+1}: {opt_prompt.get('strategy', '未知策略')}"):
+            # 使用更清晰的视觉分隔
+            st.divider()
+            
             # 优化策略部分
-            st.markdown("**优化策略:**")
+            st.markdown("#### 优化策略")
             st.write(opt_prompt.get("strategy", ""))
             
             # 显示针对解决的问题（如果有）
             if "problem_addressed" in opt_prompt:
-                st.markdown("**针对解决的问题:**")
+                st.markdown("#### 针对解决的问题")
                 st.info(opt_prompt.get("problem_addressed", ""))
             
             # 预期改进
-            st.markdown("**预期改进:**")
+            st.markdown("#### 预期改进")
             st.write(opt_prompt.get("expected_improvements", ""))
             
             # 优化理由（如果有）
             if "reasoning" in opt_prompt:
-                st.markdown("**优化理由:**")
+                st.markdown("#### 优化理由")
                 st.info(opt_prompt.get("reasoning", ""))
             
+            st.divider()
+            
             # 显示优化后的提示词
-            st.markdown("**优化后的提示词:**")
-            st.code(opt_prompt.get("prompt", ""))
+            st.markdown("#### 优化后的提示词")
+            st.code(opt_prompt.get("prompt", ""), language="markdown")
+            
+            st.divider()
             
             # 创建按钮，将优化后的提示词保存为新模板或运行A/B测试
             col1, col2 = st.columns(2)
             
             with col1:
-                if st.button(f"保存为新模板", key=f"save_opt_{i}"):
+                if st.button(f"💾 保存为新模板", key=f"save_opt_{i}"):
                     # 复制原始模板，替换提示词内容
                     new_template = dict(template)
                     current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -383,7 +388,7 @@ def display_optimized_prompts(optimized_prompts, template, model, model_provider
                     st.success(f"已保存为新模板: {new_template['name']}")
             
             with col2:
-                if st.button(f"A/B测试", key=f"test_opt_{i}"):
+                if st.button(f"🔍 A/B测试", key=f"test_opt_{i}"):
                     # 创建优化后的模板
                     optimized_template = dict(template)
                     optimized_template["name"] = f"{template.get('name', '')}的优化版本_{i+1}"

@@ -89,46 +89,45 @@ def display_test_summary(results, template, model):
     col1, col2 = st.columns(2)
     
     with col1:
-        st.metric("平均分数", f"{avg_score:.1f}")
-        st.write("维度评分:")
-        for dim, score in dimension_scores.items():
-            st.write(f"- {dim}: {score:.1f}")
+        if avg_score > 0:
+            st.metric("平均分数", f"{avg_score:.1f}")
+            st.write("维度评分:")
+            for dim, score in dimension_scores.items():
+                st.metric(dim, f"{score:.1f}", label_visibility="visible")
+        else:
+            st.warning("未能找到有效的评估分数")
     
     with col2:
-        # 创建雷达图
-        fig = create_dimension_radar_chart(
-            [dimension_scores], 
-            [template.get("name", "当前提示词")],
-            "提示词表现雷达图"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        if dimension_scores:
+            # 创建雷达图
+            fig = create_dimension_radar_chart(
+                [dimension_scores], 
+                [template.get("name", "当前提示词")],
+                "提示词表现雷达图"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("没有足够的维度评分来生成雷达图")
     
     return avg_score, dimension_scores
 
 def display_response_tabs(responses):
     """使用选项卡显示多个响应"""
     if not responses:
-        st.info("无响应数据")
+        st.info("没有响应数据")
         return
-    
-    # 创建响应选项卡，每个响应一个选项卡
-    resp_tabs = st.tabs([f"响应 #{resp.get('attempt', i+1)}" for i, resp in enumerate(responses)])
-    
-    # 在每个选项卡中显示对应响应
-    for i, tab in enumerate(resp_tabs):
-        resp = responses[i]
-        with tab:
-            if resp.get("error"):
-                st.error(resp.get("error"))
-            else:
-                st.code(resp.get("response", ""))
-                
-                # 显示token使用情况
-                if resp.get("usage"):
-                    st.info(f"Token使用: {resp['usage'].get('total_tokens', '未知')}")
+        
+    for i, resp in enumerate(responses):
+        st.markdown(f"**响应 #{i+1}:**")
+        if resp.get("error"):
+            st.error(resp.get("error"))
+        else:
+            st.code(resp.get("response", "无响应"))
             
-            # 显示评估结果
-            display_evaluation_results(resp.get("evaluation"))
+        # 显示评估结果
+        eval_result = resp.get("evaluation")
+        if eval_result:
+            display_evaluation_results(eval_result)
 
 def display_evaluation_results(eval_result):
     """显示评估结果"""
@@ -165,8 +164,13 @@ def display_evaluation_results(eval_result):
     if "prompt_info" in eval_result:
         st.info(f"提示词Token数: {eval_result['prompt_info'].get('token_count', '未知')}")
 
-def display_test_case_details(case, show_system_prompt=True):
-    """显示测试用例详细信息"""
+def display_test_case_details(case, show_system_prompt=True, inside_expander=False):
+    """显示测试用例详情"""
+    if not case:
+        st.info("没有测试用例数据")
+        return
+        
+    # 显示用户输入和期望输出
     col1, col2 = st.columns(2)
     
     with col1:
@@ -177,10 +181,69 @@ def display_test_case_details(case, show_system_prompt=True):
         st.markdown("**期望输出:**")
         st.code(case.get("expected_output", ""))
     
+    # 显示系统提示（可选）
     if show_system_prompt:
-        with st.expander("查看系统提示"):
+        if inside_expander:
+            # 如果已经在expander内部，就不使用嵌套expander
+            st.markdown("**系统提示:**")
             st.code(case.get("prompt", ""))
+        else:
+            # 正常使用expander
+            with st.expander("查看系统提示"):
+                st.code(case.get("prompt", ""))
     
-    # 显示响应
-    st.markdown("**模型响应:**")
-    display_response_tabs(case.get("responses", []))
+    # 显示响应和评估结果
+    if "responses" in case and case["responses"]:
+        st.markdown("**模型响应:**")
+        for resp in case["responses"]:
+            # 如果在expander内部，则不使用嵌套expander
+            if inside_expander:
+                st.markdown(f"**响应 (模型: {resp.get('model', '未知')}, 尝试: #{resp.get('attempt', 0)}):**")
+                if resp.get("error"):
+                    st.error(resp.get("error"))
+                else:
+                    st.code(resp.get("response", ""))
+                    if resp.get("usage"):
+                        st.info(f"Token使用: {resp.get('usage', {}).get('total_tokens', '未知')}")
+                
+                # 显示评估结果
+                if resp.get("evaluation"):
+                    display_evaluation_results(resp.get("evaluation"))
+            else:
+                with st.expander(f"响应 (模型: {resp.get('model', '未知')}, 尝试: #{resp.get('attempt', 0)})"):
+                    if resp.get("error"):
+                        st.error(resp.get("error"))
+                    else:
+                        st.code(resp.get("response", ""))
+                        if resp.get("usage"):
+                            st.info(f"Token使用: {resp.get('usage', {}).get('total_tokens', '未知')}")
+                    
+                    # 显示评估结果
+                    if resp.get("evaluation"):
+                        display_evaluation_results(resp.get("evaluation"))
+    
+    # 兼容旧格式 - 如果使用model_responses
+    elif "model_responses" in case:
+        st.markdown("**模型响应:**")
+        for resp in case["model_responses"]:
+            # 如果在expander内部，则不使用嵌套expander
+            if inside_expander:
+                st.markdown(f"**响应 (模型: {resp.get('model', '未知')}, 尝试: #{resp.get('attempt', 0)}):**")
+                if resp.get("error"):
+                    st.error(resp.get("error"))
+                else:
+                    st.code(resp.get("response", ""))
+                    if resp.get("usage"):
+                        st.info(f"Token使用: {resp.get('usage', {}).get('total_tokens', '未知')}")
+            else:
+                with st.expander(f"响应 (模型: {resp.get('model', '未知')}, 尝试: #{resp.get('attempt', 0)})"):
+                    if resp.get("error"):
+                        st.error(resp.get("error"))
+                    else:
+                        st.code(resp.get("response", ""))
+                        if resp.get("usage"):
+                            st.info(f"Token使用: {resp.get('usage', {}).get('total_tokens', '未知')}")
+    
+    # 显示评估结果（如果使用旧格式）
+    if "evaluation" in case:
+        display_evaluation_results(case["evaluation"])

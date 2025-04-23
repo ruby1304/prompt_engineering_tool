@@ -364,14 +364,24 @@ def run_test(template, model, test_set, model_provider=None, repeat_count=1, tem
     
     return results
 
-def display_template_info(template, show_token_count=True):
+def display_template_info(template, show_token_count=True, inside_expander=False):
     """显示提示词模板信息"""
     st.info(f"**名称**: {template.get('name', '未命名')}")
     st.markdown(f"**描述**: {template.get('description', '无描述')}")
     
-    with st.expander("查看提示词内容"):
+    if inside_expander:
+        # 如果已经在expander内，不使用嵌套expander
+        st.markdown("**提示词内容:**")
         st.code(template.get("template", ""))
         
         if show_token_count:
             token_count = count_tokens(template.get("template", ""))
             st.caption(f"Token数: {token_count}")
+    else:
+        # 正常使用expander
+        with st.expander("查看提示词内容"):
+            st.code(template.get("template", ""))
+            
+            if show_token_count:
+                token_count = count_tokens(template.get("template", ""))
+                st.caption(f"Token数: {token_count}")

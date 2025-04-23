@@ -11,15 +11,27 @@ class PromptEvaluator:
         config = load_config()
         self.evaluator_model = config.get("evaluator_model", "gpt-4") 
         self.provider = get_provider_from_model(self.evaluator_model)
-        self.client = get_client(self.provider)
-    
+        
+        # 验证API密钥
+        api_key = get_api_key(self.provider)
+        if not api_key:
+            # 如果没有API密钥，强制使用本地评估
+            config["use_local_evaluation"] = True
+            print(f"警告: {self.provider} 的API密钥未配置，将使用本地评估")
+        
+        self.use_local_evaluation = config.get("use_local_evaluation", False)
+        self.client = get_client(self.provider) if not self.use_local_evaluation else None
+
     async def evaluate_response(self, model_response: str, expected_output: str, 
                                criteria: Dict, prompt: str) -> Dict:
         """评估模型响应"""
+        # 如果配置为使用本地评估，直接返回本地评估结果
+        if self.use_local_evaluation:
+            return self.perform_basic_evaluation(model_response, expected_output)
+            
         prompt_tokens = count_tokens(prompt)
         
-        evaluation_prompt = f"""
-你是一个专业的AI响应质量评估专家。请对以下AI生成的响应进行评估:
+        evaluation_prompt = f"""你是一个专业的AI响应质量评估专家。请对以下AI生成的响应进行评估:
 
 原始提示词: {prompt}
 
@@ -73,29 +85,22 @@ class PromptEvaluator:
                 
                 return eval_data
             except json.JSONDecodeError:
-                # 解析失败，返回错误信息
-                return {
-                    "error": "评估结果格式错误，无法解析为JSON",
-                    "raw_response": eval_text,
-                    "prompt_info": {
-                        "token_count": prompt_tokens,
-                    }
-                }
+                # 解析失败，返回错误信息并使用本地评估作为备选
+                local_result = self.perform_basic_evaluation(model_response, expected_output)
+                local_result["error"] = "评估结果格式错误，已切换到本地评估"
+                local_result["raw_response"] = eval_text
+                return local_result
+                
         except Exception as e:
-            return {
-                "error": f"评估过程出错: {str(e)}",
-                "prompt_info": {
-                    "token_count": prompt_tokens,
-                }
-            }
+            # 发生错误时使用本地评估作为备选
+            local_result = self.perform_basic_evaluation(model_response, expected_output)
+            local_result["error"] = f"评估过程出错: {str(e)}，已切换到本地评估"
+            return local_result
             
-    def evaluate_response_sync(self, model_response: str, expected_output: str, 
-                             criteria: Dict, prompt: str) -> Dict:
-        """同步版本的评估函数（包装异步函数）"""
-
-        # 检查是否强制使用本地评估
-        config = load_config()
-        if config.get("use_local_evaluation", False):
+    def evaluate_response_sync(self, model_response, expected_output, criteria, prompt):
+        """同步评估模型响应"""
+        # 如果配置为使用本地评估，直接返回本地评估结果
+        if self.use_local_evaluation:
             return self.perform_basic_evaluation(model_response, expected_output)
 
         import time
@@ -114,59 +119,119 @@ class PromptEvaluator:
             print(message)
         
         try:
-            # 检查评估模型API密钥
-            provider = get_provider_from_model(self.evaluator_model)
-            api_key = get_api_key(provider)
+            # 记录基本信息
+            log_message(f"开始评估 - 使用模型: {self.evaluator_model}, 提供商: {self.provider}")
             
-            log_message(f"开始评估 - 使用模型: {self.evaluator_model}, 提供商: {provider}")
+            if self.use_local_evaluation:
+                log_message("当前配置为使用本地评估")
+                return self.perform_basic_evaluation(model_response, expected_output)
             
-            if not api_key:
-                log_message(f"警告: 评估模型 {self.evaluator_model} 的API密钥未设置或为空")
-                local_result = self.perform_basic_evaluation(model_response, expected_output)
-                log_message(f"使用本地评估作为后备: {local_result}")
-                return local_result
-            else:
-                log_message(f"API密钥已配置 (长度: {len(api_key)})")
+            # 记录评估请求内容
+            log_message(f"评估请求 - 模型响应长度: {len(model_response)}, 期望输出长度: {len(expected_output)}")
+            log_message(f"评估标准: {criteria}")
             
-            # 创建事件循环
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            # 在Streamlit环境中，使用更安全的方法运行异步函数
             try:
-                # 记录评估请求内容
-                log_message(f"评估请求 - 模型响应长度: {len(model_response)}, 期望输出长度: {len(expected_output)}")
-                log_message(f"评估标准: {criteria}")
-                
-                # 运行异步评估
                 start_time = time.time()
-                result = loop.run_until_complete(self.evaluate_response(
-                    model_response, expected_output, criteria, prompt
-                ))
+                # 直接运行异步评估函数，不创建新的事件循环
+                result = self._run_async_evaluation(model_response, expected_output, criteria, prompt)
                 end_time = time.time()
                 
                 # 记录评估结果
                 if "error" in result:
-                    log_message(f"评估模型返回错误: {result['error']}")
-                    if "raw_response" in result:
-                        log_message(f"原始响应: {result['raw_response']}")
-                    
-                    log_message("使用本地评估作为后备")
-                    local_result = self.perform_basic_evaluation(model_response, expected_output)
-                    log_message(f"本地评估结果: {local_result}")
-                    return local_result
+                    log_message(f"评估过程发生错误: {result['error']}")
                 else:
                     log_message(f"评估成功完成，耗时: {end_time - start_time:.2f}秒")
-                    log_message(f"评估结果: {result}")
-                    return result
-            finally:
-                loop.close()
+                
+                return result
+            except Exception as e:
+                log_message(f"处理评估时出错: {str(e)}")
+                # 使用本地评估作为备选
+                local_result = self.perform_basic_evaluation(model_response, expected_output)
+                local_result["error"] = f"无法执行AI评估，已切换到本地评估: {str(e)}"
+                return local_result
+                
         except Exception as e:
             import traceback
             error_details = traceback.format_exc()
             log_message(f"评估过程发生错误: {str(e)}")
             log_message(f"错误详情: {error_details}")
             
+            # 发生错误时使用本地评估
             local_result = self.perform_basic_evaluation(model_response, expected_output)
-            log_message(f"使用本地评估作为后备: {local_result}")
+            local_result["error"] = f"评估过程出错，已切换到本地评估: {str(e)}"
+            return local_result
+            
+    def _run_async_evaluation(self, model_response, expected_output, criteria, prompt):
+        """以同步方式运行异步评估函数，适合在Streamlit环境使用"""
+        # 构建评估提示词
+        prompt_tokens = count_tokens(prompt)
+        
+        evaluation_prompt = f"""你是一个专业的AI响应质量评估专家。请对以下AI生成的响应进行评估:
+
+原始提示词: {prompt}
+
+模型响应:
+{model_response}
+
+期望输出:
+{expected_output}
+
+评估标准:
+{json.dumps(criteria, ensure_ascii=False, indent=2)}
+
+请按以下格式给出评估分数和分析:
+{{
+  "scores": {{
+    "accuracy": <0-100分，评估响应与期望输出的准确度>,
+    "completeness": <0-100分，评估响应是否涵盖了所有期望的要点>,
+    "relevance": <0-100分，评估响应与原始提示词的相关性>,
+    "clarity": <0-100分，评估响应的清晰度和可理解性>
+  }},
+  "analysis": "<详细分析，包括优点和改进建议>",
+  "overall_score": <0-100分，综合评分>
+}}
+
+仅返回JSON格式的评估结果，不要包含其他文本。
+"""
+        
+        evaluation_params = {
+            "temperature": 0.2,  # 低温度以获得一致的评估
+            "max_tokens": 1500
+        }
+        
+        try:
+            # 使用同步方式调用API客户端
+            result = self.client.generate_sync(evaluation_prompt, self.evaluator_model, evaluation_params)
+            eval_text = result.get("text", "")
+            
+            # 尝试解析JSON结果
+            try:
+                # 清理可能的前后缀文本
+                if "```json" in eval_text:
+                    eval_text = eval_text.split("```json")[1].split("```")[0].strip()
+                elif "```" in eval_text:
+                    eval_text = eval_text.split("```")[1].split("```")[0].strip()
+                
+                eval_data = json.loads(eval_text)
+                
+                # 添加提示词token信息
+                eval_data["prompt_info"] = {
+                    "token_count": prompt_tokens,
+                }
+                
+                return eval_data
+            except json.JSONDecodeError:
+                # 解析失败，返回错误信息并使用本地评估作为备选
+                local_result = self.perform_basic_evaluation(model_response, expected_output)
+                local_result["error"] = "评估结果格式错误，已切换到本地评估"
+                local_result["raw_response"] = eval_text
+                return local_result
+                
+        except Exception as e:
+            # 发生错误时使用本地评估作为备选
+            local_result = self.perform_basic_evaluation(model_response, expected_output)
+            local_result["error"] = f"评估过程出错: {str(e)}，已切换到本地评估"
             return local_result
 
     def perform_basic_evaluation(self, model_response: str, expected_output: str) -> Dict:

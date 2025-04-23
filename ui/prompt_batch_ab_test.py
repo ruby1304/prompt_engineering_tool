@@ -35,7 +35,7 @@ def render_prompt_batch_ab_test():
         
         if st.button("返回提示词专项优化"):
             st.session_state.page = "prompt_optimization"
-            st.experimental_rerun()
+            st.rerun()
         return
     
     # 获取批量A/B测试数据
@@ -57,11 +57,11 @@ def render_prompt_batch_ab_test():
     with st.expander("查看所有提示词"):
         st.subheader("原始提示词")
         from utils.common import display_template_info
-        display_template_info(original_template)
+        display_template_info(original_template, inside_expander=True)
         
         for i, opt_template in enumerate(optimized_templates):
             st.subheader(f"优化版本 {i+1}")
-            display_template_info(opt_template)
+            display_template_info(opt_template, inside_expander=True)
     
     # 测试参数设置
     st.subheader("测试参数")
@@ -153,7 +153,7 @@ def render_prompt_batch_ab_test():
                 st.session_state.batch_test_results = batch_results
                 
                 # 刷新页面以显示结果
-                st.experimental_rerun()
+                st.rerun()
     
     # 如果已有测试结果，显示结果
     if "batch_test_results" in st.session_state:
@@ -164,7 +164,7 @@ def render_prompt_batch_ab_test():
         if st.button("🗑️ 清除测试结果", key="clear_batch_results"):
             if "batch_test_results" in st.session_state:
                 del st.session_state.batch_test_results
-            st.experimental_rerun()
+            st.rerun()
 
 def display_batch_test_results(batch_results):
     """显示批量测试结果对比"""
@@ -408,8 +408,8 @@ def display_case_comparisons(compare_results, compare_versions):
                         st.success("✓ 此版本在当前用例中表现最佳")
                     
                     # 显示系统提示
-                    with st.expander("查看系统提示"):
-                        st.code(data["case"].get("prompt", ""))
+                    st.subheader("系统提示")
+                    st.code(data["case"].get("prompt", ""))
                     
                     # 显示所有响应
                     st.subheader("响应")
