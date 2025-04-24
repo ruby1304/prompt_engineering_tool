@@ -3,7 +3,7 @@ import asyncio
 from typing import Dict, List, Optional, Any, Tuple
 
 from models.api_clients import get_client, get_provider_from_model
-from config import load_config
+from config import load_config, get_system_template
 
 class PromptOptimizer:
     """提示词自动优化器"""
@@ -12,6 +12,9 @@ class PromptOptimizer:
         self.optimizer_model = config.get("evaluator_model", "gpt-4")  # 使用与评估相同的模型
         self.provider = get_provider_from_model(self.optimizer_model)
         self.client = get_client(self.provider)
+        
+        # 获取优化器模板
+        self.optimizer_template = get_system_template("optimizer")
     
     async def optimize_prompt(self, original_prompt: str, test_results: List[Dict], optimization_strategy: str = "balanced") -> Dict:
         """基于测试结果优化提示词"""
@@ -24,56 +27,14 @@ class PromptOptimizer:
         # 将测试结果格式化为摘要
         results_summary = self.format_test_results_summary(test_results)
         
-        # 构建优化提示
-        optimization_prompt = f"""
-你是一个专业的提示词工程优化专家。请基于详细的评估分析，为原始提示词生成3个针对性优化版本。
-
-原始提示词:
-{original_prompt}
-
-评估结果摘要:
-{results_summary}
-
-主要问题分析:
-{problem_analysis}
-
-优化指导:
-{optimization_guidance}
-
-请生成3个不同的优化版本，每个版本针对不同的问题方向。对每个版本，请详细说明:
-1. 应用的优化策略
-2. 如何解决发现的问题
-3. 预期的效果改进
-
-请按以下JSON格式返回优化结果:
-```json
-{{
-  "optimized_prompts": [
-    {{
-      "prompt": "优化后的提示词内容1",
-      "strategy": "应用的优化策略说明",
-      "problem_addressed": "针对解决的主要问题",
-      "expected_improvements": "预期的效果改进",
-      "reasoning": "为什么这种修改能解决问题"
-    }},
-    {{
-      "prompt": "优化后的提示词内容2",
-      "strategy": "应用的优化策略说明",
-      "problem_addressed": "针对解决的主要问题",
-      "expected_improvements": "预期的效果改进",
-      "reasoning": "为什么这种修改能解决问题"
-    }},
-    {{
-      "prompt": "优化后的提示词内容3",
-      "strategy": "应用的优化策略说明",
-      "problem_addressed": "针对解决的主要问题",
-      "expected_improvements": "预期的效果改进",
-      "reasoning": "为什么这种修改能解决问题"
-    }}
-  ]
-}}
-```
-仅返回JSON格式的优化结果，不要包含其他文本。 """
+        # 使用系统模板而不是硬编码的提示词
+        template = self.optimizer_template.get("template", "")
+        optimization_prompt = template\
+            .replace("{{original_prompt}}", original_prompt)\
+            .replace("{{results_summary}}", results_summary)\
+            .replace("{{problem_analysis}}", problem_analysis)\
+            .replace("{{optimization_guidance}}", optimization_guidance)
+        
         optimization_params = {
             "temperature": 0.7,  # 适当提高温度以获得更多样化的优化结果
             "max_tokens": 4000

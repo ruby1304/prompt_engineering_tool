@@ -2,7 +2,7 @@ import json
 import asyncio
 from typing import Dict, List, Optional, Any
 from models.api_clients import get_client, get_provider_from_model
-from config import load_config, get_api_key
+from config import load_config, get_api_key, get_system_template
 from models.token_counter import count_tokens
 
 class PromptEvaluator:
@@ -21,6 +21,9 @@ class PromptEvaluator:
         
         self.use_local_evaluation = config.get("use_local_evaluation", False)
         self.client = get_client(self.provider) if not self.use_local_evaluation else None
+        
+        # 获取评估模板
+        self.evaluator_template = get_system_template("evaluator")
 
     async def evaluate_response(self, model_response: str, expected_output: str, 
                                criteria: Dict, prompt: str) -> Dict:
@@ -31,33 +34,13 @@ class PromptEvaluator:
             
         prompt_tokens = count_tokens(prompt)
         
-        evaluation_prompt = f"""你是一个专业的AI响应质量评估专家。请对以下AI生成的响应进行评估:
-
-原始提示词: {prompt}
-
-模型响应:
-{model_response}
-
-期望输出:
-{expected_output}
-
-评估标准:
-{json.dumps(criteria, ensure_ascii=False, indent=2)}
-
-请按以下格式给出评估分数和分析:
-{{
-  "scores": {{
-    "accuracy": <0-100分，评估响应与期望输出的准确度>,
-    "completeness": <0-100分，评估响应是否涵盖了所有期望的要点>,
-    "relevance": <0-100分，评估响应与原始提示词的相关性>,
-    "clarity": <0-100分，评估响应的清晰度和可理解性>
-  }},
-  "analysis": "<详细分析，包括优点和改进建议>",
-  "overall_score": <0-100分，综合评分>
-}}
-
-仅返回JSON格式的评估结果，不要包含其他文本。
-"""
+        # 使用系统模板而不是硬编码的提示词
+        template = self.evaluator_template.get("template", "")
+        evaluation_prompt = template\
+            .replace("{{prompt}}", prompt)\
+            .replace("{{model_response}}", model_response)\
+            .replace("{{expected_output}}", expected_output)\
+            .replace("{{evaluation_criteria}}", json.dumps(criteria, ensure_ascii=False, indent=2))
         
         evaluation_params = {
             "temperature": 0.2,  # 低温度以获得一致的评估
@@ -167,33 +150,13 @@ class PromptEvaluator:
         # 构建评估提示词
         prompt_tokens = count_tokens(prompt)
         
-        evaluation_prompt = f"""你是一个专业的AI响应质量评估专家。请对以下AI生成的响应进行评估:
-
-原始提示词: {prompt}
-
-模型响应:
-{model_response}
-
-期望输出:
-{expected_output}
-
-评估标准:
-{json.dumps(criteria, ensure_ascii=False, indent=2)}
-
-请按以下格式给出评估分数和分析:
-{{
-  "scores": {{
-    "accuracy": <0-100分，评估响应与期望输出的准确度>,
-    "completeness": <0-100分，评估响应是否涵盖了所有期望的要点>,
-    "relevance": <0-100分，评估响应与原始提示词的相关性>,
-    "clarity": <0-100分，评估响应的清晰度和可理解性>
-  }},
-  "analysis": "<详细分析，包括优点和改进建议>",
-  "overall_score": <0-100分，综合评分>
-}}
-
-仅返回JSON格式的评估结果，不要包含其他文本。
-"""
+        # 使用系统模板而不是硬编码的提示词
+        template = self.evaluator_template.get("template", "")
+        evaluation_prompt = template\
+            .replace("{{prompt}}", prompt)\
+            .replace("{{model_response}}", model_response)\
+            .replace("{{expected_output}}", expected_output)\
+            .replace("{{evaluation_criteria}}", json.dumps(criteria, ensure_ascii=False, indent=2))
         
         evaluation_params = {
             "temperature": 0.2,  # 低温度以获得一致的评估

@@ -11,8 +11,9 @@ TEMPLATES_DIR = DATA_DIR / "templates"
 TEST_SETS_DIR = DATA_DIR / "test_sets"
 RESULTS_DIR = DATA_DIR / "results"
 PROVIDERS_DIR = DATA_DIR / "providers"  # 新增：服务提供商配置目录
+SYSTEM_TEMPLATES_DIR = DATA_DIR / "system_templates"  # 新增：系统提示词模板目录
 
-for directory in [DATA_DIR, TEMPLATES_DIR, TEST_SETS_DIR, RESULTS_DIR, PROVIDERS_DIR]:
+for directory in [DATA_DIR, TEMPLATES_DIR, TEST_SETS_DIR, RESULTS_DIR, PROVIDERS_DIR, SYSTEM_TEMPLATES_DIR]:
     directory.mkdir(exist_ok=True, parents=True)
 
 # 默认配置
@@ -36,7 +37,183 @@ DEFAULT_CONFIG = {
         "max_tokens": 1000,
         "top_p": 1.0
     },
-    "use_local_evaluation": False
+    "use_local_evaluation": False,
+    "system_templates": {  # 新增：系统提示词模板类型
+        "evaluator": "evaluator_template",
+        "optimizer": "optimizer_template",
+        "criteria_generator": "criteria_generator_template"
+    }
+}
+
+# 默认系统提示词模板
+DEFAULT_SYSTEM_TEMPLATES = {
+    "evaluator_template": {
+        "name": "evaluator_template",
+        "description": "用于评估模型响应的提示词模板",
+        "template": """你是一个专业的AI响应质量评估专家。请对以下AI生成的响应进行评估:
+
+原始提示词: {{prompt}}
+
+模型响应:
+{{model_response}}
+
+期望输出:
+{{expected_output}}
+
+评估标准:
+{{evaluation_criteria}}
+
+请按以下格式给出评估分数和分析:
+{
+  "scores": {
+    "accuracy": <0-100分，评估响应与期望输出的准确度>,
+    "completeness": <0-100分，评估响应是否涵盖了所有期望的要点>,
+    "relevance": <0-100分，评估响应与原始提示词的相关性>,
+    "clarity": <0-100分，评估响应的清晰度和可理解性>
+  },
+  "analysis": "<详细分析，包括优点和改进建议>",
+  "overall_score": <0-100分，综合评分>
+}
+
+仅返回JSON格式的评估结果，不要包含其他文本。""",
+        "variables": {
+            "prompt": {
+                "description": "原始提示词",
+                "default": "请分析这段文本的情感"
+            },
+            "model_response": {
+                "description": "模型生成的响应",
+                "default": "文本表达了积极的情感。"
+            },
+            "expected_output": {
+                "description": "期望的输出",
+                "default": "这段文本表达了积极的情感，情感分数为0.8。"
+            },
+            "evaluation_criteria": {
+                "description": "评估标准",
+                "default": "{\n  \"accuracy\": \"评估响应与期望输出的匹配程度\",\n  \"completeness\": \"评估响应是否包含所有必要信息\"\n}"
+            }
+        },
+        "is_system": True
+    },
+    "optimizer_template": {
+        "name": "optimizer_template",
+        "description": "用于优化提示词的提示词模板",
+        "template": """你是一个专业的提示词工程优化专家。请基于详细的评估分析，为原始提示词生成3个针对性优化版本。
+
+原始提示词:
+{{original_prompt}}
+
+评估结果摘要:
+{{results_summary}}
+
+主要问题分析:
+{{problem_analysis}}
+
+优化指导:
+{{optimization_guidance}}
+
+请生成3个不同的优化版本，每个版本针对不同的问题方向。对每个版本，请详细说明:
+1. 应用的优化策略
+2. 如何解决发现的问题
+3. 预期的效果改进
+
+请按以下JSON格式返回优化结果:
+```json
+{
+  "optimized_prompts": [
+    {
+      "prompt": "优化后的提示词内容1",
+      "strategy": "应用的优化策略说明",
+      "problem_addressed": "针对解决的主要问题",
+      "expected_improvements": "预期的效果改进",
+      "reasoning": "为什么这种修改能解决问题"
+    },
+    {
+      "prompt": "优化后的提示词内容2",
+      "strategy": "应用的优化策略说明",
+      "problem_addressed": "针对解决的主要问题",
+      "expected_improvements": "预期的效果改进",
+      "reasoning": "为什么这种修改能解决问题"
+    },
+    {
+      "prompt": "优化后的提示词内容3",
+      "strategy": "应用的优化策略说明",
+      "problem_addressed": "针对解决的主要问题",
+      "expected_improvements": "预期的效果改进",
+      "reasoning": "为什么这种修改能解决问题"
+    }
+  ]
+}
+```
+仅返回JSON格式的优化结果，不要包含其他文本。""",
+        "variables": {
+            "original_prompt": {
+                "description": "原始提示词",
+                "default": "你是一个助手。请回答用户的问题。"
+            },
+            "results_summary": {
+                "description": "评估结果摘要",
+                "default": "整体得分: 70分\n准确性: 65分\n完整性: 75分\n相关性: 80分\n清晰度: 60分"
+            },
+            "problem_analysis": {
+                "description": "问题分析",
+                "default": "主要问题是在准确性和清晰度方面表现不佳"
+            },
+            "optimization_guidance": {
+                "description": "优化指导",
+                "default": "提供更明确的角色定义，添加输出格式要求，提高响应的完整性"
+            }
+        },
+        "is_system": True
+    },
+    "criteria_generator_template": {
+        "name": "criteria_generator_template",
+        "description": "用于生成评估标准的提示词模板",
+        "template": """你是一位资深的AI模型评估专家。请根据以下测试用例信息，为AI回答生成全面的评估标准。
+
+测试用例描述:
+{{case_description}}
+
+用户输入:
+{{user_input}}
+
+期望输出:
+{{expected_output}}
+
+请生成以下四个维度的评估标准，描述应该具体且可衡量：
+1. accuracy（准确性）- 评估响应与期望输出的匹配程度
+2. completeness（完整性）- 评估响应是否包含所有必要信息
+3. relevance（相关性）- 评估响应与提示词和用户输入的相关程度
+4. clarity（清晰度）- 评估响应的表达是否清晰易懂
+
+使用以下JSON格式返回评估标准:
+```json
+{
+  "accuracy": "具体描述准确性的评估标准",
+  "completeness": "具体描述完整性的评估标准",
+  "relevance": "具体描述相关性的评估标准",
+  "clarity": "具体描述清晰度的评估标准"
+}
+```
+
+只返回JSON格式的评估标准，不要包含其他解释。""",
+        "variables": {
+            "case_description": {
+                "description": "测试用例描述",
+                "default": "情感分析测试"
+            },
+            "user_input": {
+                "description": "用户输入",
+                "default": "我今天感到非常高兴，一切都很顺利！"
+            },
+            "expected_output": {
+                "description": "期望输出",
+                "default": "{\n  \"sentiment\": \"positive\",\n  \"score\": 0.9,\n  \"analysis\": \"文本表达了强烈的积极情感\"\n}"
+            }
+        },
+        "is_system": True
+    }
 }
 
 # 默认提供商配置模板
@@ -142,19 +319,73 @@ def get_template_list() -> List[str]:
     """获取所有提示词模板列表"""
     return [f.name.replace(".json", "") for f in TEMPLATES_DIR.glob("*.json")]
 
-def get_test_set_list() -> List[str]:
-    """获取所有测试集列表"""
-    return [f.name.replace(".json", "") for f in TEST_SETS_DIR.glob("*.json")]
+def get_system_template_list() -> List[str]:
+    """获取所有系统提示词模板列表"""
+    return [f.name.replace(".json", "") for f in SYSTEM_TEMPLATES_DIR.glob("*.json")]
+
+def get_all_templates() -> Dict[str, List[str]]:
+    """获取所有模板，分为普通模板和系统模板"""
+    return {
+        "normal": get_template_list(),
+        "system": get_system_template_list()
+    }
 
 def save_template(name: str, template: Dict) -> None:
     """保存提示词模板"""
-    with open(TEMPLATES_DIR / f"{name}.json", "w", encoding="utf-8") as f:
+    # 根据是否是系统模板决定保存位置
+    if template.get("is_system", False):
+        file_path = SYSTEM_TEMPLATES_DIR / f"{name}.json"
+    else:
+        file_path = TEMPLATES_DIR / f"{name}.json"
+
+    with open(file_path, "w", encoding="utf-8") as f:
         json.dump(template, f, indent=2, ensure_ascii=False)
 
 def load_template(name: str) -> Dict:
     """加载提示词模板"""
-    with open(TEMPLATES_DIR / f"{name}.json", "r", encoding="utf-8") as f:
-        return json.load(f)
+    # 先检查普通模板
+    template_path = TEMPLATES_DIR / f"{name}.json"
+    if template_path.exists():
+        with open(template_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    
+    # 再检查系统模板
+    system_template_path = SYSTEM_TEMPLATES_DIR / f"{name}.json"
+    if system_template_path.exists():
+        with open(system_template_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    
+    # 如果都不存在，抛出错误
+    raise FileNotFoundError(f"模板 '{name}' 不存在")
+
+def initialize_system_templates():
+    """初始化系统提示词模板"""
+    for template_name, template_data in DEFAULT_SYSTEM_TEMPLATES.items():
+        system_template_path = SYSTEM_TEMPLATES_DIR / f"{template_name}.json"
+        if not system_template_path.exists():
+            save_template(template_name, template_data)
+    
+    # 更新配置文件中的系统模板引用
+    config = load_config()
+    if "system_templates" not in config:
+        config["system_templates"] = DEFAULT_CONFIG["system_templates"]
+        save_config(config)
+
+def get_system_template(template_type: str) -> Dict:
+    """根据类型获取系统提示词模板"""
+    config = load_config()
+    template_name = config.get("system_templates", {}).get(template_type)
+    
+    if not template_name:
+        # 如果配置中没有，使用默认值
+        template_name = DEFAULT_CONFIG["system_templates"].get(template_type)
+    
+    # 尝试加载模板
+    try:
+        return load_template(template_name)
+    except FileNotFoundError:
+        # 如果找不到，返回默认模板
+        return DEFAULT_SYSTEM_TEMPLATES.get(template_type, {})
 
 def save_test_set(name: str, test_set: Dict) -> None:
     """保存测试集"""
@@ -179,6 +410,10 @@ def load_result(name: str) -> Dict:
 def get_result_list() -> List[str]:
     """获取所有测试结果列表"""
     return [f.name.replace(".json", "") for f in RESULTS_DIR.glob("*.json")]
+
+def get_test_set_list() -> List[str]:
+    """获取所有测试集列表"""
+    return [f.name.replace(".json", "") for f in TEST_SETS_DIR.glob("*.json")]
 
 def save_provider_config(provider_name: str, config: Dict) -> None:
     """保存提供商配置"""

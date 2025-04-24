@@ -6,7 +6,7 @@ import asyncio
 import pandas as pd
 import time
 
-from config import load_config, update_api_key, get_api_key
+from config import load_config, update_api_key, get_api_key, initialize_system_templates
 from models.token_counter import count_tokens, estimate_cost
 from utils.evaluator import PromptEvaluator
 from utils.optimizer import PromptOptimizer
@@ -17,6 +17,9 @@ from utils.visualizer import (
     generate_report,
     display_report
 )
+
+# 初始化系统提示词模板
+initialize_system_templates()
 
 from ui.api_manager import render_api_manager
 from ui.model_selector import render_model_selector

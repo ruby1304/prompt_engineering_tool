@@ -45,12 +45,27 @@ def render_prompt_batch_ab_test():
     model_provider = st.session_state.get("batch_ab_test_model_provider")
     test_set_name = st.session_state.batch_ab_test_test_set
     
+    # 获取原始测试结果（从专项优化的测试结果中获取，不重新评估）
+    original_results = None
+    if hasattr(st.session_state, 'specialized_test_results'):
+        original_results = st.session_state.specialized_test_results
+        
+        # 获取测试参数
+        test_params = original_results.get("test_params", {})
+        temperature = test_params.get("temperature", 0.7)
+        repeat_count = test_params.get("repeat_count", 2)
+    else:
+        # 默认值，实际上这种情况不应该发生
+        temperature = 0.7
+        repeat_count = 2
+    
     st.markdown(f"""
     ### 批量评估: 原始提示词 vs {len(optimized_templates)}个优化版本
     
     - **模型**: {model} ({model_provider if model_provider else "未指定提供商"})
     - **测试集**: {test_set_name}
     - **优化版本数**: {len(optimized_templates)}
+    - **评估参数**: 温度 {temperature}, 每个测试重复 {repeat_count} 次
     """)
     
     # 显示提示词概览
@@ -63,29 +78,14 @@ def render_prompt_batch_ab_test():
             st.subheader(f"优化版本 {i+1}")
             display_template_info(opt_template, inside_expander=True)
     
-    # 测试参数设置
-    st.subheader("测试参数")
+    # 移除手动测试参数设置，使用与原始优化测试相同的参数
+    st.info(f"""
+    **注意**: 批量评估使用与提示词专项优化相同的参数：
+    - 温度 (Temperature): **{temperature}**
+    - 每个测试重复次数: **{repeat_count}**
     
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        repeat_count = st.slider(
-            "每个测试重复次数", 
-            min_value=1, 
-            max_value=5, 
-            value=2, 
-            help="增加重复次数可提高结果稳定性，特别是在高温度设置下"
-        )
-    
-    with col2:
-        temperature = st.slider(
-            "Temperature", 
-            min_value=0.0, 
-            max_value=2.0, 
-            value=0.7, 
-            step=0.1,
-            help="控制模型输出的随机性。较高的值会产生更多样化但可能不一致的输出"
-        )
+    这确保了评估结果的一致性和可比性。
+    """)
     
     # 运行批量测试
     if "batch_test_results" not in st.session_state:
@@ -102,30 +102,16 @@ def render_prompt_batch_ab_test():
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
-                # 计算总任务数
-                total_templates = 1 + len(optimized_templates)
+                # 计算总任务数 - 只有优化版本需要测试
+                total_templates = len(optimized_templates)
                 total_tasks = total_templates
                 completed_tasks = 0
                 
                 # 准备结果存储
                 batch_results = {
-                    "original": {"template": original_template, "results": None},
+                    "original": {"template": original_template, "results": original_results},
                     "optimized": []
                 }
-                
-                # 测试原始提示词
-                status_text.text("测试原始提示词...")
-                original_results = run_test(
-                    original_template, 
-                    model, 
-                    test_set, 
-                    model_provider=model_provider,
-                    repeat_count=repeat_count,
-                    temperature=temperature
-                )
-                batch_results["original"]["results"] = original_results
-                completed_tasks += 1
-                progress_bar.progress(completed_tasks / total_tasks)
                 
                 # 测试所有优化版本
                 for i, opt_template in enumerate(optimized_templates):

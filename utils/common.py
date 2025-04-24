@@ -11,6 +11,7 @@ import asyncio
 from models.token_counter import count_tokens
 from models.api_clients import get_client, get_provider_from_model
 from utils.evaluator import PromptEvaluator
+from config import load_config
 
 def calculate_average_score(results):
     """计算平均得分"""
@@ -385,3 +386,82 @@ def display_template_info(template, show_token_count=True, inside_expander=False
             if show_token_count:
                 token_count = count_tokens(template.get("template", ""))
                 st.caption(f"Token数: {token_count}")
+
+def generate_evaluation_criteria(case_description, user_input, expected_output):
+    """使用AI生成测试用例的评估标准"""
+    try:
+        # 获取配置的评估模型
+        config = load_config()
+        evaluator_model = config.get("evaluator_model", "gpt-4")
+        provider = get_provider_from_model(evaluator_model)
+        
+        # 获取API客户端
+        client = get_client(provider)
+        
+        # 获取系统模板
+        from config import get_system_template
+        criteria_generator_template = get_system_template("criteria_generator")
+        
+        # 使用模板替换变量
+        criteria_generation_prompt = criteria_generator_template.get("template", "")\
+            .replace("{{case_description}}", case_description)\
+            .replace("{{user_input}}", user_input)\
+            .replace("{{expected_output}}", expected_output)
+
+        # 设置参数
+        params = {
+            "temperature": 0.2,
+            "max_tokens": 1000
+        }
+        
+        # 同步调用模型API
+        result = client.generate_sync(criteria_generation_prompt, evaluator_model, params)
+        
+        if "error" in result:
+            return {
+                "error": result["error"],
+                "criteria": {
+                    "accuracy": "评估响应与期望输出的匹配程度",
+                    "completeness": "评估响应是否包含所有必要信息",
+                    "relevance": "评估响应与提示词的相关性",
+                    "clarity": "评估响应的清晰度和可理解性"
+                }
+            }
+        
+        # 处理响应文本，提取JSON
+        response_text = result.get("text", "")
+        
+        # 清理可能的前后缀文本
+        if "```json" in response_text:
+            response_text = response_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in response_text:
+            response_text = response_text.split("```")[1].split("```")[0].strip()
+        
+        # 解析JSON
+        try:
+            criteria = json.loads(response_text)
+            return {
+                "criteria": criteria
+            }
+        except json.JSONDecodeError:
+            return {
+                "error": "无法解析生成的评估标准",
+                "raw_response": response_text,
+                "criteria": {
+                    "accuracy": "评估响应与期望输出的匹配程度",
+                    "completeness": "评估响应是否包含所有必要信息",
+                    "relevance": "评估响应与提示词的相关性",
+                    "clarity": "评估响应的清晰度和可理解性"
+                }
+            }
+    
+    except Exception as e:
+        return {
+            "error": f"生成评估标准时出错: {str(e)}",
+            "criteria": {
+                "accuracy": "评估响应与期望输出的匹配程度",
+                "completeness": "评估响应是否包含所有必要信息",
+                "relevance": "评估响应与提示词的相关性",
+                "clarity": "评估响应的清晰度和可理解性"
+            }
+        }
