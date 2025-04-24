@@ -21,7 +21,6 @@ from utils.visualizer import (
 # 初始化系统提示词模板
 initialize_system_templates()
 
-from ui.api_manager import render_api_manager
 from ui.model_selector import render_model_selector
 from ui.prompt_editor import render_prompt_editor
 from ui.test_manager import render_test_manager
@@ -65,10 +64,7 @@ with st.sidebar:
     if st.button("🏠 首页", use_container_width=True):
         navigate_to("home")
     
-    if st.button("🔑 API密钥管理", use_container_width=True):
-        navigate_to("api_manager")
-
-    if st.button("🌐 模型提供商管理", use_container_width=True):
+    if st.button("🔑 API密钥与提供商管理", use_container_width=True):
         navigate_to("provider_manager")
 
     if st.button("📝 提示词编辑器", use_container_width=True):
@@ -101,7 +97,7 @@ if st.session_state.page == "home":
     
     ### 使用流程
     
-    1. **API密钥设置** - 在API密钥管理页面设置您的API密钥
+    1. **API密钥设置** - 在API密钥与提供商管理页面设置您的API密钥和模型提供商
     2. **创建提示词** - 在提示词编辑器中创建和编辑提示词模板
     3. **准备测试集** - 在测试集管理页面创建测试用例
     4. **运行测试** - 在测试运行页面执行提示词测试
@@ -142,9 +138,6 @@ if st.session_state.page == "home":
             navigate_to("test_runner")
 
 # 渲染其他页面
-elif st.session_state.page == "api_manager":
-    render_api_manager()
-
 elif st.session_state.page == "prompt_editor":
     render_prompt_editor()
 

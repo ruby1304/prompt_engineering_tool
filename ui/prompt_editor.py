@@ -232,7 +232,7 @@ def render_template_editor(template):
                 "default": new_var_default
             }
             st.success(f"已添加变量: {new_var_name}")
-            st.experimental_rerun()
+            st.rerun()
     
     # 预览
     st.subheader("预览")

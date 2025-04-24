@@ -143,7 +143,7 @@ def render_prompt_optimization():
                     st.session_state.specialized_test_set_name = selected_test_set
                     
                     # 刷新页面以显示结果和优化按钮
-                    st.experimental_rerun()
+                    st.rerun()
     
     # 如果已有测试结果，显示结果和优化按钮
     if has_test_results:
@@ -180,7 +180,7 @@ def render_prompt_optimization():
                 del st.session_state.optimized_prompts
             
             # 刷新页面
-            st.experimental_rerun()
+            st.rerun()
         
         # 步骤4: 生成优化提示词
         st.subheader("步骤4: 生成优化提示词")
@@ -310,7 +310,7 @@ def generate_optimized_prompts(results, template, model, optimization_strategy, 
                 
                 # 跳转到批量A/B测试页面
                 st.session_state.page = "prompt_batch_ab_test"
-                st.experimental_rerun()
+                st.rerun()
 
 def display_optimized_prompts(optimized_prompts, template, model, model_provider):
     """显示优化提示词结果"""
@@ -338,7 +338,7 @@ def display_optimized_prompts(optimized_prompts, template, model, model_provider
         
         # 跳转到批量A/B测试页面
         st.session_state.page = "prompt_batch_ab_test"
-        st.experimental_rerun()
+        st.rerun()
     
     # 显示各个优化提示词版本
     for i, opt_prompt in enumerate(optimized_prompts):
@@ -404,4 +404,4 @@ def display_optimized_prompts(optimized_prompts, template, model, model_provider
                     
                     # 跳转到A/B测试页面
                     st.session_state.page = "prompt_ab_test"
-                    st.experimental_rerun()
+                    st.rerun()

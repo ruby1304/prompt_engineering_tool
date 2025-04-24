@@ -7,9 +7,9 @@ from models.token_counter import count_tokens
 
 class PromptEvaluator:
     """提示词评估引擎"""
-    def __init__(self):
+    def __init__(self, evaluator_model=None):
         config = load_config()
-        self.evaluator_model = config.get("evaluator_model", "gpt-4") 
+        self.evaluator_model = evaluator_model or config.get("evaluator_model", "gpt-4") 
         self.provider = get_provider_from_model(self.evaluator_model)
         
         # 验证API密钥

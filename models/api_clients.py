@@ -879,6 +879,148 @@ class XAIClient(BaseAPIClient):
             params
         )
 
+class AzureClient(BaseAPIClient):
+    """Azure OpenAI API客户端"""
+    def setup_credentials(self):
+        # 获取Azure配置
+        provider_config = load_provider_config("azure")
+        self.api_key = get_api_key("azure")
+        self.endpoint = provider_config.get("base_url", "")
+        self.api_version = provider_config.get("api_version", "2023-05-15")
+        
+        # 设置请求头
+        self.headers = {
+            "Content-Type": "application/json",
+            "api-key": self.api_key
+        }
+
+    async def generate_with_messages(self, messages: List[Dict], model: str, params: Dict) -> Dict:
+        try:
+            # 构建API URL - 使用部署名作为模型标识
+            deployment_id = model.replace("azure-", "") if model.startswith("azure-") else model
+            url = f"{self.endpoint}/openai/deployments/{deployment_id}/chat/completions?api-version={self.api_version}"
+            
+            # 检查并修复URL中可能的路径重复问题
+            if "/openai/deployments" in self.endpoint:
+                url = f"{self.endpoint}/chat/completions?api-version={self.api_version}"
+                
+                # 如果endpoint中没有包含deployment_id，则在URL中添加
+                if deployment_id not in self.endpoint:
+                    # 从endpoint中提取基础URL，不包含任何路径
+                    base_parts = self.endpoint.split("/openai/deployments/")
+                    if len(base_parts) > 1:
+                        url = f"{base_parts[0]}/openai/deployments/{deployment_id}/chat/completions?api-version={self.api_version}"
+
+            # 准备请求数据
+            data = {
+                "messages": messages,
+                "temperature": params.get("temperature", 0.7),
+                "max_tokens": params.get("max_tokens", 1000),
+                "top_p": params.get("top_p", 1.0)
+            }
+            
+            # 使用线程池执行同步请求
+            session = requests.Session()
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: session.post(
+                    url,
+                    json=data,
+                    headers=self.headers
+                )
+            )
+            
+            # 检查响应
+            response.raise_for_status()
+            result = response.json()
+            
+            # 构造结果格式 (遵循OpenAI格式)
+            return {
+                "text": result["choices"][0]["message"]["content"],
+                "model": model,
+                "usage": result.get("usage", {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0
+                })
+            }
+        except Exception as e:
+            return {
+                "error": str(e),
+                "model": model
+            }
+    
+    async def generate(self, prompt: str, model: str, params: Dict) -> Dict:
+        """使用消息格式生成内容"""
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": prompt}
+        ]
+        return await self.generate_with_messages(messages, model, params)
+    
+    def _execute_generate_with_messages_sync(self, messages: List[Dict], model: str, params: Dict) -> Dict:
+        """同步版本的消息生成方法"""
+        try:
+            # 构建API URL - 使用部署名作为模型标识
+            deployment_id = model.replace("azure-", "") if model.startswith("azure-") else model
+            url = f"{self.endpoint}/openai/deployments/{deployment_id}/chat/completions?api-version={self.api_version}"
+            
+            # 检查并修复URL中可能的路径重复问题
+            if "/openai/deployments" in self.endpoint:
+                url = f"{self.endpoint}/chat/completions?api-version={self.api_version}"
+                
+                # 如果endpoint中没有包含deployment_id，则在URL中添加
+                if deployment_id not in self.endpoint:
+                    # 从endpoint中提取基础URL，不包含任何路径
+                    base_parts = self.endpoint.split("/openai/deployments/")
+                    if len(base_parts) > 1:
+                        url = f"{base_parts[0]}/openai/deployments/{deployment_id}/chat/completions?api-version={self.api_version}"
+            
+            # 准备请求数据
+            data = {
+                "messages": messages,
+                "temperature": params.get("temperature", 0.7),
+                "max_tokens": params.get("max_tokens", 1000),
+                "top_p": params.get("top_p", 1.0)
+            }
+            
+            # 执行同步请求
+            session = requests.Session()
+            response = session.post(
+                url,
+                json=data,
+                headers=self.headers
+            )
+            
+            # 检查响应
+            response.raise_for_status()
+            result = response.json()
+            
+            # 构造结果格式
+            return {
+                "text": result["choices"][0]["message"]["content"],
+                "model": model,
+                "usage": result.get("usage", {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0
+                })
+            }
+        except Exception as e:
+            return {
+                "error": str(e),
+                "model": model
+            }
+    
+    def _execute_generate_sync(self, prompt: str, model: str, params: Dict) -> Dict:
+        """同步版本的生成方法"""
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": prompt}
+        ]
+        return self._execute_generate_with_messages_sync(messages, model, params)
+
 def get_client(provider: str) -> BaseAPIClient:
     """获取指定提供商的API客户端"""
     config = load_config()
@@ -889,6 +1031,7 @@ def get_client(provider: str) -> BaseAPIClient:
         "anthropic": AnthropicClient,
         "google": GoogleClient,
         "xai": XAIClient,
+        "azure": AzureClient,
     }
     
     # 检查是否为内置提供商
@@ -925,5 +1068,7 @@ def get_provider_from_model(model: str) -> str:
         return "google"
     elif model.startswith("grok-"):
         return "xai"
+    elif model.startswith("azure-"):
+        return "azure"
     
     raise ValueError(f"无法确定模型的提供商: {model}")

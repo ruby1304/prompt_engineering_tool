@@ -39,7 +39,7 @@ def render_test_manager():
             # 初始化编辑状态
             if "selected_case_index" in st.session_state:
                 del st.session_state.selected_case_index
-            st.experimental_rerun()
+            st.rerun()
         
         if test_set_list:
             st.write("选择现有测试集:")
@@ -49,7 +49,7 @@ def render_test_manager():
                     # 初始化编辑状态
                     if "selected_case_index" in st.session_state:
                         del st.session_state.selected_case_index
-                    st.experimental_rerun()
+                    st.rerun()
         
         # 导入测试集
         with st.expander("导入测试集"):
@@ -63,7 +63,7 @@ def render_test_manager():
                         if "selected_case_index" in st.session_state:
                             del st.session_state.selected_case_index
                         st.success("测试集导入成功")
-                        st.experimental_rerun()
+                        st.rerun()
                 except json.JSONDecodeError:
                     st.error("文件格式错误，请上传有效的JSON文件")
         
@@ -187,7 +187,7 @@ def render_test_manager():
                 if st.button("添加全局变量", use_container_width=True) and new_var_name:
                     test_set["variables"][new_var_name] = new_var_value
                     st.success(f"已添加全局变量: {new_var_name}")
-                    st.experimental_rerun()
+                    st.rerun()
         
         # ===================== 测试用例管理（优化后的部分）=====================
         st.subheader("📋 测试用例管理")
@@ -217,7 +217,7 @@ def render_test_manager():
                 # 设置新添加的用例为当前编辑的用例
                 st.session_state.selected_case_index = len(test_set["cases"]) - 1
                 st.success("已添加新测试用例")
-                st.experimental_rerun()
+                st.rerun()
         
         with col2:
             # 关键词搜索框
@@ -347,7 +347,7 @@ def render_test_manager():
                         new_selected_index = indices_in_original[selected_row]
                         if "selected_case_index" not in st.session_state or st.session_state.selected_case_index != new_selected_index:
                             st.session_state.selected_case_index = new_selected_index
-                            st.experimental_rerun()
+                            st.rerun()
             
             # 分页控件
             col1, col2, col3, col4 = st.columns([1, 1, 2, 1])
@@ -355,12 +355,12 @@ def render_test_manager():
             with col1:
                 if st.button("◀️ 上一页", disabled=st.session_state.page_number <= 0):
                     st.session_state.page_number -= 1
-                    st.experimental_rerun()
+                    st.rerun()
             
             with col2:
                 if st.button("▶️ 下一页", disabled=st.session_state.page_number >= total_pages - 1):
                     st.session_state.page_number += 1
-                    st.experimental_rerun()
+                    st.rerun()
             
             with col3:
                 st.write(f"第 {st.session_state.page_number + 1} 页，共 {total_pages} 页")
@@ -378,7 +378,7 @@ def render_test_manager():
                 )
                 if st.button("跳转", key="goto_page_button"):
                     st.session_state.page_number = page_input - 1
-                    st.experimental_rerun()
+                    st.rerun()
         else:
             st.info("暂无测试用例，请点击上方按钮添加，或修改搜索条件")
         
@@ -409,7 +409,7 @@ def render_test_manager():
                         if "selected_case_index" in st.session_state:
                             del st.session_state.selected_case_index
                         st.success(f"已删除测试用例")
-                        st.experimental_rerun()
+                        st.rerun()
                 
                 # 编辑区域的选项卡：变量、输入输出、评估标准
                 edit_tab1, edit_tab2, edit_tab3 = st.tabs(["变量", "输入与期望输出", "评估标准"])
@@ -470,7 +470,7 @@ def render_test_manager():
                         if st.button("添加变量", key=f"edit_add_var_{i}", use_container_width=True) and new_var_name:
                             case["variables"][new_var_name] = new_var_value
                             st.success(f"已添加变量: {new_var_name}")
-                            st.experimental_rerun()
+                            st.rerun()
                 
                 with edit_tab2:
                     # 用户输入和期望输出 - 并排显示
@@ -555,7 +555,7 @@ def render_test_manager():
                         if st.button("添加标准", key=f"edit_add_crit_{i}", disabled=not new_crit_name, use_container_width=True):
                             case["evaluation_criteria"][new_crit_name] = new_crit_value
                             st.success(f"已添加评估标准: {new_crit_name}")
-                            st.experimental_rerun()
+                            st.rerun()
                     
                     # AI生成评估标准
                     st.divider()
@@ -577,7 +577,7 @@ def render_test_manager():
                                     case["evaluation_criteria"] = result["criteria"]
                                     st.success("✅ 评估标准已自动生成")
                                     # 强制页面刷新显示新生成的评估标准
-                                    st.experimental_rerun()
+                                    st.rerun()
                     
                     with ai_col2:
                         st.caption("说明: 根据用例描述、用户输入和期望输出自动生成标准格式的评估标准。评估分数范围为0-100分。")

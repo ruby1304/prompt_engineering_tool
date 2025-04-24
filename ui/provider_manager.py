@@ -1,35 +1,46 @@
 import streamlit as st
 import json
 import pandas as pd
-from typing import Dict, List
+from typing import Dict, List, Optional, Any
 from config import (
     get_provider_list, load_provider_config, add_custom_provider, 
     remove_custom_provider, update_api_key, add_model_to_provider,
-    remove_model_from_provider, DEFAULT_PROVIDER_CONFIG
+    remove_model_from_provider, DEFAULT_PROVIDER_CONFIG, load_config, get_api_key,
+    get_available_models, save_config
 )
+from models.api_clients import get_provider_from_model, get_client
 
 def render_provider_manager():
-    st.title("🌐 模型提供商管理")
+    st.title("🔑 API密钥与提供商管理")
     
     st.markdown("""
-    在这里管理您的模型提供商。您可以设置API密钥、基础URL、支持的模型等信息，
-    以便在测试和优化过程中使用这些提供商的模型。
+    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+    <h3 style="color: #4b778d;">在这里管理您的模型提供商和API密钥</h3>
+    <p>设置API密钥、基础URL、支持的模型等信息，以便在测试和优化过程中使用这些提供商的模型。</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.info("""
+    🔒 API密钥将安全地存储在本地配置文件中，不会被发送到任何外部服务。
     """)
     
     # 获取提供商列表
     provider_list = get_provider_list()
     
-    # 创建选项卡
-    tab1, tab2 = st.tabs(["提供商管理", "添加新提供商"])
+    # 创建选项卡，使用emoji美化选项卡标题
+    tab1, tab2, tab3 = st.tabs(["🔧 提供商管理", "➕ 添加新提供商", "🧪 评估模型测试"])
     
     with tab1:
         if not provider_list:
             st.info("暂无提供商，请先添加提供商")
         else:
-            # 创建提供商选择器
+            # 创建提供商选择器，添加样式
+            st.markdown('<div style="margin-bottom: 12px; font-weight: 500;">选择提供商</div>', unsafe_allow_html=True)
             selected_provider = st.selectbox(
-                "选择提供商",
-                provider_list
+                "",
+                provider_list,
+                key="provider_selector",
+                help="选择要管理的模型提供商"
             )
             
             if selected_provider:
@@ -37,22 +48,26 @@ def render_provider_manager():
     
     with tab2:
         create_new_provider()
+        
+    with tab3:
+        test_evaluator_model()
 
 def display_provider_details(provider_name: str):
     """显示提供商详细信息"""
     # 加载提供商配置
     provider_config = load_provider_config(provider_name)
+    config = load_config()
     
     # 显示提供商基本信息
     st.subheader(f"提供商: {provider_config.get('display_name', provider_name)}")
     
     # 提供商类型
-    is_custom = "custom_providers" in st.session_state and provider_name in st.session_state.custom_providers
+    is_custom = provider_name in config.get("custom_providers", [])
     provider_type = "自定义提供商" if is_custom else "内置提供商"
     st.markdown(f"**类型**: {provider_type}")
     
-    # API密钥
-    api_key = provider_config.get("api_key", "")
+    # 获取API密钥
+    api_key = get_api_key(provider_name)
     new_api_key = st.text_input(
         "API密钥",
         value=api_key if api_key else "",
@@ -60,9 +75,24 @@ def display_provider_details(provider_name: str):
         help="输入您的API密钥"
     )
     
-    if st.button("保存API密钥", key=f"save_key_{provider_name}"):
-        update_api_key(provider_name, new_api_key)
-        st.success(f"{provider_name} API密钥已保存")
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        if st.button("保存API密钥", key=f"save_key_{provider_name}"):
+            update_api_key(provider_name, new_api_key)
+            st.success(f"{provider_name} API密钥已保存")
+    
+    with col2:
+        if st.button("测试API密钥", key=f"test_key_{provider_name}"):
+            if not new_api_key:
+                st.error(f"{provider_name} API密钥未设置")
+            else:
+                # 保存API密钥后再测试
+                update_api_key(provider_name, new_api_key)
+                test_api_key(provider_name)
+    
+    # 价格信息
+    if not is_custom:
+        display_pricing_info(provider_name)
     
     # 如果是自定义提供商，显示更多配置选项
     if is_custom:
@@ -113,6 +143,63 @@ def display_provider_details(provider_name: str):
                     provider_config["endpoints"] = {}
                 provider_config["endpoints"]["chat"] = new_chat_endpoint
                 add_custom_provider(provider_config)
+            
+            # Azure 特殊处理
+            if provider_name == "azure":
+                st.subheader("Azure OpenAI配置")
+                
+                # 基础URL (Azure终端点)
+                base_url = provider_config.get("base_url", "")
+                new_base_url = st.text_input(
+                    "Azure终端点",
+                    value=base_url,
+                    help="输入Azure OpenAI资源的终端点URL，例如: https://your-resource-name.openai.azure.com",
+                    key="azure_base_url"
+                )
+                if base_url != new_base_url:
+                    provider_config["base_url"] = new_base_url
+                    add_custom_provider(provider_config)
+                
+                # API版本
+                api_version = provider_config.get("api_version", "2023-05-15")
+                new_api_version = st.text_input(
+                    "API版本",
+                    value=api_version,
+                    help="Azure OpenAI API版本，例如: 2023-05-15",
+                    key="azure_api_version"
+                )
+                if api_version != new_api_version:
+                    provider_config["api_version"] = new_api_version
+                    add_custom_provider(provider_config)
+            
+            # 价格信息
+            st.subheader("价格信息")
+            col1, col2 = st.columns(2)
+            with col1:
+                price_input = st.number_input(
+                    "输入价格 (每1000 tokens)",
+                    min_value=0.0,
+                    value=provider_config.get("price_input", 0.001),
+                    step=0.0001,
+                    format="%.6f",
+                    help="每1000个输入tokens的价格（美元）"
+                )
+                if price_input != provider_config.get("price_input", 0.0):
+                    provider_config["price_input"] = price_input
+                    add_custom_provider(provider_config)
+            
+            with col2:
+                price_output = st.number_input(
+                    "输出价格 (每1000 tokens)",
+                    min_value=0.0,
+                    value=provider_config.get("price_output", 0.002),
+                    step=0.0001,
+                    format="%.6f",
+                    help="每1000个输出tokens的价格（美元）"
+                )
+                if price_output != provider_config.get("price_output", 0.0):
+                    provider_config["price_output"] = price_output
+                    add_custom_provider(provider_config)
             
             # 请求头
             st.subheader("请求头")
@@ -179,13 +266,18 @@ def display_provider_details(provider_name: str):
             if st.button("删除此提供商", type="primary", key=f"delete_{provider_name}"):
                 remove_custom_provider(provider_name)
                 st.success(f"已删除提供商: {provider_name}")
-                st.experimental_rerun()
+                st.rerun()
     
     # 模型管理
     st.subheader("模型管理")
     
     # 显示现有模型
-    models = provider_config.get("models", [])
+    models = []
+    if is_custom:
+        models = provider_config.get("models", [])
+    else:
+        config = load_config()
+        models = config["models"].get(provider_name, [])
     
     if not models:
         st.info("暂无模型，请添加模型")
@@ -193,16 +285,20 @@ def display_provider_details(provider_name: str):
         st.write("当前支持的模型:")
         
         for i, model in enumerate(models):
-            col1, col2 = st.columns([3, 1])
+            col1, col2, col3 = st.columns([3, 1, 1])
             
             with col1:
                 st.write(f"- {model}")
             
             with col2:
-                if st.button("移除", key=f"remove_model_{i}"):
+                if st.button("测试", key=f"test_model_{i}", help=f"测试模型 {model} 是否可用"):
+                    test_model(provider_name, model)
+            
+            with col3:
+                if st.button("移除", key=f"remove_model_{i}", help=f"从提供商移除模型 {model}"):
                     remove_model_from_provider(provider_name, model)
                     st.success(f"已移除模型: {model}")
-                    st.experimental_rerun()
+                    st.rerun()
     
     # 添加新模型
     with st.form("add_model_form"):
@@ -218,7 +314,72 @@ def display_provider_details(provider_name: str):
         if submit_button and new_model:
             add_model_to_provider(provider_name, new_model)
             st.success(f"已添加模型: {new_model}")
-            st.experimental_rerun()
+            st.rerun()
+
+def display_pricing_info(provider_name: str):
+    """显示内置提供商的价格信息"""
+    if provider_name == "openai":
+        st.markdown("""
+        ### 价格参考
+        - GPT-3.5 Turbo: $0.0005 / 1K tokens (输入), $0.0015 / 1K tokens (输出)
+        - GPT-4: $0.03 / 1K tokens (输入), $0.06 / 1K tokens (输出)
+        - GPT-4o: $0.01 / 1K tokens (输入), $0.03 / 1K tokens (输出)
+        
+        ### 获取方式
+        1. 访问 [OpenAI API Dashboard](https://platform.openai.com/api-keys)
+        2. 登录您的账户
+        3. 创建新的API密钥
+        """)
+    elif provider_name == "anthropic":
+        st.markdown("""
+        ### 价格参考
+        - Claude 3 Haiku: $0.00025 / 1K tokens (输入), $0.00125 / 1K tokens (输出)
+        - Claude 3 Sonnet: $0.003 / 1K tokens (输入), $0.015 / 1K tokens (输出)
+        - Claude 3 Opus: $0.015 / 1K tokens (输入), $0.075 / 1K tokens (输出)
+        
+        ### 获取方式
+        1. 访问 [Anthropic Console](https://console.anthropic.com/)
+        2. 登录您的账户
+        3. 创建新的API密钥
+        """)
+    elif provider_name == "google":
+        st.markdown("""
+        ### 价格参考
+        - Gemini 1.0 Pro: $0.0025 / 1K tokens (输入+输出)
+        - Gemini 1.5 Pro: $0.0025 / 1K tokens (输入+输出)
+        
+        ### 获取方式
+        1. 访问 [Google AI Studio](https://makersuite.google.com/app/apikey)
+        2. 登录您的账户
+        3. 创建新的API密钥
+        """)
+    elif provider_name == "xai":
+        st.markdown("""
+        ### 价格参考
+        - Grok-3: 价格暂未公布
+        
+        ### 获取方式
+        1. 访问 [X.AI](https://x.ai/)
+        2. 获取API访问权限
+        """)
+    elif provider_name == "azure":
+        st.markdown("""
+        ### 价格参考
+        - GPT-4o: 价格取决于您的Azure订阅，通常与OpenAI价格相近
+          - 标准价格: $0.01 / 1K tokens (输入), $0.03 / 1K tokens (输出)
+        
+        ### 配置方式
+        1. 访问 [Azure Portal](https://portal.azure.com/)
+        2. 创建或选择您的Azure OpenAI资源
+        3. 获取以下信息:
+           - API密钥 (在"密钥和终结点"下)
+           - 终结点 URL (例如: https://your-resource-name.openai.azure.com)
+           - 部署名称 (您为模型部署指定的名称)
+        
+        ### 注意事项
+        - 对于Azure，需要在"提供商高级配置"中设置正确的API基础URL
+        - 您也可以添加模型部署ID (例如: gpt-4o)
+        """)
 
 def create_new_provider():
     """创建新的提供商"""
@@ -382,4 +543,275 @@ def create_new_provider():
             # 添加提供商
             add_custom_provider(provider_config)
             st.success(f"已添加提供商: {display_name}")
-            st.experimental_rerun()
+            st.rerun()
+
+def test_api_key(provider_name: str):
+    """测试API密钥是否有效"""
+    try:
+        # 获取提供商的一个模型进行测试
+        config = load_config()
+        models = []
+        
+        if provider_name in config["models"]:
+            models = config["models"][provider_name]
+        else:
+            provider_config = load_provider_config(provider_name)
+            models = provider_config.get("models", [])
+        
+        if not models:
+            st.warning(f"提供商 {provider_name} 没有可用的模型，请先添加模型")
+            return
+        
+        # 获取API客户端
+        try:
+            client = get_client(provider_name)
+        except Exception as e:
+            st.error(f"获取API客户端失败: {str(e)}")
+            return
+        
+        # 使用第一个模型进行测试
+        test_model = models[0]
+        
+        # 消息格式
+        messages = [
+            {"role": "user", "content": "测试消息，请回复 '你好，我正常工作'"}
+        ]
+        
+        # 执行测试
+        with st.spinner(f"正在测试 {provider_name} API密钥..."):
+            result = client.generate_with_messages_sync(
+                messages,
+                test_model,
+                {"max_tokens": 20, "temperature": 0.1}
+            )
+        
+        if "error" in result:
+            st.error(f"API密钥测试失败: {result['error']}")
+        else:
+            st.success(f"API密钥有效，成功连接到 {provider_name} 服务")
+            st.write(f"测试模型: {test_model}")
+            st.write(f"模型响应: {result['text']}")
+    
+    except Exception as e:
+        st.error(f"测试过程中发生错误: {str(e)}")
+
+def test_model(provider_name: str, model: str):
+    """测试指定模型是否可用"""
+    try:
+        # 获取API客户端
+        try:
+            client = get_client(provider_name)
+        except Exception as e:
+            st.error(f"获取API客户端失败: {str(e)}")
+            return
+        
+        # 消息格式
+        messages = [
+            {"role": "user", "content": "测试消息，请回复 '你好，我正常工作'"}
+        ]
+        
+        # 执行测试
+        with st.spinner(f"正在测试模型 {model}..."):
+            result = client.generate_with_messages_sync(
+                messages,
+                model,
+                {"max_tokens": 20, "temperature": 0.1}
+            )
+        
+        if "error" in result:
+            st.error(f"模型测试失败: {result['error']}")
+        else:
+            st.success(f"模型 {model} 测试成功")
+            st.write(f"模型响应: {result['text']}")
+    
+    except Exception as e:
+        st.error(f"测试过程中发生错误: {str(e)}")
+
+def test_evaluator_model():
+    """测试评估模型功能"""
+    st.subheader("评估模型设置与测试")
+
+    # 获取当前配置的评估模型
+    config = load_config()
+    available_models = get_available_models()
+    current_evaluator = config.get("evaluator_model", "gpt-4")
+    
+    # 创建两列布局
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("评估模型选择")
+        
+        # 创建所有可用模型的列表
+        eval_model_options = []
+        for provider, models in available_models.items():
+            for model in models:
+                eval_model_options.append(f"{model} ({provider})")
+        
+        # 查找当前评估模型的索引
+        current_index = 0
+        for i, model_str in enumerate(eval_model_options):
+            if model_str.startswith(current_evaluator + " "):
+                current_index = i
+                break
+        
+        selected_evaluator_str = st.selectbox(
+            "选择评估模型",
+            eval_model_options,
+            index=current_index if current_index < len(eval_model_options) else 0,
+            help="用于评估测试结果的模型"
+        )
+        
+        # 从显示字符串中提取模型名称
+        if selected_evaluator_str:
+            selected_evaluator = selected_evaluator_str.split(" (")[0]
+            new_provider = selected_evaluator_str.split(" (")[1].rstrip(")")
+            
+            # 添加本地评估的选项
+            use_local = config.get("use_local_evaluation", False)
+            new_use_local = st.checkbox(
+                "使用本地评估（不调用API）", 
+                value=use_local,
+                help="选中此项将使用本地评估方法，而不调用评估模型API。本地评估使用基于文本相似度的简单算法。"
+            )
+            
+            # 保存按钮
+            if st.button("保存评估模型设置"):
+                config["evaluator_model"] = selected_evaluator
+                config["use_local_evaluation"] = new_use_local
+                save_config(config)
+                st.success(f"评估模型已更新为: {selected_evaluator}")
+                if new_use_local != use_local:
+                    st.success(f"本地评估设置已更新为: {'启用' if new_use_local else '禁用'}")
+        
+    with col2:
+        st.subheader("当前评估模型信息")
+        provider = get_provider_from_model(current_evaluator)
+        api_key = get_api_key(provider)
+        
+        st.write(f"当前评估模型: **{current_evaluator}**")
+        st.write(f"提供商: **{provider}**")
+        st.write(f"API密钥状态: **{'已配置 ✅' if api_key else '未配置 ❌'}**")
+        st.write(f"本地评估: **{'启用 ✅' if config.get('use_local_evaluation', False) else '禁用 ❌'}**")
+    
+    # 分割线
+    st.divider()
+    
+    st.subheader("评估模型测试")
+    st.write("测试当前评估模型是否能正确处理评估请求")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # 测试参数设置
+        test_response = st.text_area(
+            "测试响应",
+            value="这是一个测试响应，用于验证评估模型是否正常工作。",
+            height=100,
+            help="输入要评估的测试响应"
+        )
+    
+    with col2:
+        test_expected = st.text_area(
+            "期望输出",
+            value="这是期望的输出，用于验证评估模型是否正常工作。",
+            height=100,
+            help="输入期望的输出结果"
+        )
+    
+    # 评估标准 - 可展开的高级选项
+    with st.expander("高级选项 - 自定义评估标准"):
+        criteria_col1, criteria_col2 = st.columns(2)
+        
+        with criteria_col1:
+            accuracy_criteria = st.text_input(
+                "准确性标准",
+                value="评估响应与期望输出的匹配程度",
+                help="输入评估准确性的标准"
+            )
+            
+            completeness_criteria = st.text_input(
+                "完整性标准",
+                value="评估响应是否包含所有必要信息",
+                help="输入评估完整性的标准"
+            )
+        
+        with criteria_col2:
+            relevance_criteria = st.text_input(
+                "相关性标准",
+                value="评估响应与提示词的相关性",
+                help="输入评估相关性的标准"
+            )
+            
+            clarity_criteria = st.text_input(
+                "清晰度标准",
+                value="评估响应的清晰度和可理解性",
+                help="输入评估清晰度的标准"
+            )
+
+    if st.button("运行测试", type="primary"):
+        provider = get_provider_from_model(current_evaluator)
+        api_key = get_api_key(provider)
+        
+        if not api_key and not config.get("use_local_evaluation", False):
+            st.error(f"评估模型 {current_evaluator} 的API密钥未设置，请先配置API密钥或启用本地评估")
+        else:
+            with st.spinner("正在测试评估模型..."):
+                # 构建测试标准
+                test_criteria = {
+                    "accuracy": accuracy_criteria,
+                    "completeness": completeness_criteria,
+                    "relevance": relevance_criteria,
+                    "clarity": clarity_criteria
+                }
+                
+                # 创建评估器并执行测试
+                from utils.evaluator import PromptEvaluator
+                evaluator = PromptEvaluator()
+                result = evaluator.evaluate_response_sync(
+                    test_response,
+                    test_expected,
+                    test_criteria,
+                    "测试提示词"
+                )
+                
+                # 显示测试结果
+                if "error" in result:
+                    st.error(f"评估模型测试失败: {result['error']}")
+                    if "raw_response" in result:
+                        st.text_area("原始响应", value=result['raw_response'], height=200)
+                else:
+                    st.success("评估模型测试成功")
+                    
+                    # 以更美观的方式显示评估结果
+                    st.write("### 评估结果")
+                    
+                    # 评分显示
+                    if "scores" in result:
+                        scores = result["scores"]
+                        st.write("#### 评分")
+                        score_cols = st.columns(4)
+                        
+                        with score_cols[0]:
+                            st.metric("准确性", f"{scores.get('accuracy', 0)}分")
+                        
+                        with score_cols[1]:
+                            st.metric("完整性", f"{scores.get('completeness', 0)}分")
+                        
+                        with score_cols[2]:
+                            st.metric("相关性", f"{scores.get('relevance', 0)}分")
+                        
+                        with score_cols[3]:
+                            st.metric("清晰度", f"{scores.get('clarity', 0)}分")
+                        
+                        # 总体评分
+                        st.metric("总体评分", f"{result.get('overall_score', 0)}分")
+                    
+                    # 分析
+                    if "analysis" in result:
+                        st.write("#### 分析")
+                        st.write(result["analysis"])
+                    
+                    # 详细信息
+                    with st.expander("查看完整JSON结果"):
+                        st.json(result)

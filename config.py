@@ -19,19 +19,21 @@ for directory in [DATA_DIR, TEMPLATES_DIR, TEST_SETS_DIR, RESULTS_DIR, PROVIDERS
 # 默认配置
 DEFAULT_CONFIG = {
     "api_keys": {
-        "openai": "",
-        "anthropic": "",
-        "google": "",
-        "xai": ""
+        # "openai": "",
+        # "anthropic": "",
+        # "google": "",
+        "xai": "",
+        "azure": ""
     },
     "models": {
-        "openai": ["gpt-3.5-turbo", "gpt-4", "gpt-4o"],
-        "anthropic": ["claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-haiku-20240307"],
-        "google": ["gemini-1.0-pro", "gemini-1.5-pro"],
-        "xai": ["grok-3"]
+        # "openai": ["gpt-3.5-turbo", "gpt-4", "gpt-4o"],
+        # "anthropic": ["claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-haiku-20240307"],
+        # "google": ["gemini-1.0-pro", "gemini-1.5-pro"],
+        "xai": ["grok-3"],
+        "azure": ["gpt-4o"]
     },
     "custom_providers": [],  # 新增：用户添加的自定义提供商列表
-    "evaluator_model": "gpt-4",
+    "evaluator_model": "gpt-4o",
     "default_params": {
         "temperature": 0.7,
         "max_tokens": 1000,

@@ -32,7 +32,7 @@ def render_prompt_ab_test():
         
         if st.button("返回提示词专项优化"):
             st.session_state.page = "prompt_optimization"
-            st.experimental_rerun()
+            st.rerun()
         return
     
     # 获取A/B测试数据
@@ -128,7 +128,7 @@ def render_prompt_ab_test():
                 }
                 
                 # 刷新页面以显示结果
-                st.experimental_rerun()
+                st.rerun()
     
     # 如果已有测试结果，显示结果
     if "ab_test_results" in st.session_state:
@@ -138,7 +138,7 @@ def render_prompt_ab_test():
         if st.button("🗑️ 清除测试结果", key="clear_ab_results"):
             if "ab_test_results" in st.session_state:
                 del st.session_state.ab_test_results
-            st.experimental_rerun()
+            st.rerun()
 
 def display_ab_test_results(ab_results):
     """显示A/B测试结果对比"""

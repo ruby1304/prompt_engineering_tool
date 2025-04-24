@@ -276,7 +276,7 @@ def render_results_viewer():
                     try:
                         selected_log.unlink()
                         st.success("日志文件已删除")
-                        st.experimental_rerun()
+                        st.rerun()
                     except Exception as e:
                         st.error(f"删除日志文件时出错: {str(e)}")
         else:

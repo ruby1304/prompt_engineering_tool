@@ -5,7 +5,7 @@ import asyncio
 from datetime import datetime
 import time
 # 修改导入方式
-from config import get_template_list, load_template, get_test_set_list, load_test_set, save_result, get_available_models
+from config import get_template_list, load_template, get_test_set_list, load_test_set, save_result, get_available_models, load_config
 from models.api_clients import get_client, get_provider_from_model
 from models.token_counter import count_tokens, estimate_cost
 from utils.evaluator import PromptEvaluator
@@ -105,13 +105,26 @@ def render_test_runner():
             st.warning("请至少选择一个模型")
             return
     
-    
     with col2:
         st.subheader("运行参数")
         
         temperature = st.slider("Temperature", 0.0, 2.0, 0.7, 0.1)
         max_tokens = st.slider("最大输出Token", 100, 4000, 1000, 100)
         repeat_count = st.slider("每个测试重复次数", 1, 5, 2, 1)
+    
+    # 显示当前的评估器设置（而不是允许更改）
+    config = load_config()
+    current_evaluator = config.get("evaluator_model", "gpt-4")
+    use_local_eval = config.get("use_local_evaluation", False)
+    provider = get_provider_from_model(current_evaluator)
+    
+    with st.expander("当前评估器设置", expanded=False):
+        st.info(f"""
+        - 评估模型: **{current_evaluator}** ({provider})
+        - 本地评估: **{"启用" if use_local_eval else "禁用"}**
+        
+        *要更改评估模型设置，请前往 [API密钥与提供商管理 > 评估模型测试] 页面*
+        """)
     
     # 预览测试配置
     st.subheader("测试预览")
@@ -127,7 +140,8 @@ def render_test_runner():
         "测试集": test_set["name"],
         "测试用例数": len(test_set["cases"]),
         "选择的模型": model_display_info,
-        "重复次数": repeat_count
+        "重复次数": repeat_count,
+        "评估器模型": current_evaluator
     }
     
     st.json(preview_data)
@@ -191,7 +205,16 @@ def run_tests(templates, test_set, selected_models, temperature, max_tokens, rep
         }
     
     # 设置评估器
-    evaluator = PromptEvaluator()
+    config = load_config()
+    selected_evaluator = config.get("evaluator_model", "gpt-4")
+    use_local_eval = config.get("use_local_evaluation", False)
+    
+    # 创建评估器实例
+    evaluator = PromptEvaluator(evaluator_model=selected_evaluator)
+    
+    # 强制使用本地评估（如果选择）
+    if use_local_eval:
+        evaluator.use_local_evaluation = True
     
     # 运行测试
     for template in templates:
@@ -341,6 +364,5 @@ def run_tests(templates, test_set, selected_models, temperature, max_tokens, rep
     
     # 建议跳转到结果查看页面
     st.session_state.last_result = result_name
-    if st.button("📊 查看详细结果"):
-        st.session_state.page = "results_viewer"
-        st.experimental_rerun()
+    st.session_state.page = "results_viewer"
+    st.rerun()
