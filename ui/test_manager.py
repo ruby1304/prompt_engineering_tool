@@ -5,7 +5,7 @@ import time
 import uuid
 from datetime import datetime
 # 修改导入方式
-from config import save_test_set, load_test_set, get_test_set_list, get_available_models, get_api_key, load_config
+from config import save_test_set, load_test_set, get_test_set_list, get_available_models, get_api_key, load_config, delete_test_set
 from utils.common import generate_evaluation_criteria
 from models.api_clients import get_provider_from_model
 from utils.evaluator import PromptEvaluator
@@ -24,82 +24,170 @@ def render_test_manager():
     
     with tab_list:
         test_set_list = get_test_set_list()
-        
-        if st.button("➕ 新建测试集", use_container_width=True):
-            # 创建新测试集，使用唯一ID
-            st.session_state.current_test_set = {
-                "name": f"新测试集_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                "description": "",
-                "variables": {},
-                "cases": [
-                    {
-                        "id": generate_unique_id(),
-                        "description": "测试用例1",
-                        "variables": {},
-                        "user_input": "这里填写用户的输入内容。",
-                        "expected_output": "这里填写期望的模型输出内容。评估将基于此内容判断模型响应的质量。",
-                        "evaluation_criteria": {
-                            "accuracy": "评估响应与期望输出的匹配程度",
-                            "completeness": "评估响应是否包含所有必要信息",
-                            "relevance": "评估响应与提示词的相关性",
-                            "clarity": "评估响应的清晰度和可理解性"
-                        }
-                    }
-                ]
-            }
-            # 初始化编辑状态
-            if "selected_case_index" in st.session_state:
-                del st.session_state.selected_case_index
-            st.rerun()
-        
-        if test_set_list:
-            st.write("选择现有测试集:")
-            for test_set_name in test_set_list:
-                if st.button(f"📄 {test_set_name}", key=f"sel_{test_set_name}", use_container_width=True):
-                    st.session_state.current_test_set = load_test_set(test_set_name)
-                    
-                    # 兼容旧版本：检查并确保所有测试用例都有唯一ID
-                    if "current_test_set" in st.session_state:
-                        cases = st.session_state.current_test_set.get("cases", [])
-                        ids_seen = set()
-                        for i, case in enumerate(cases):
-                            # 如果ID不存在或ID重复，创建新的唯一ID
-                            if "id" not in case or not case["id"] or case["id"] in ids_seen:
-                                case["id"] = generate_unique_id()
-                            ids_seen.add(case["id"])
-                    
-                    # 初始化编辑状态
-                    if "selected_case_index" in st.session_state:
-                        del st.session_state.selected_case_index
+
+        # ======= 操作区（批量/新建） =======
+        st.markdown("#### 测试集操作")
+        op_col1, op_col2, op_col3 = st.columns([2,2,2])
+        with op_col1:
+            selected_for_merge = st.multiselect(
+                "批量合并（多选）",
+                options=test_set_list,
+                key="merge_test_sets_select"
+            )
+            if st.button("🔗 合并", disabled=len(selected_for_merge)<2, use_container_width=True):
+                merged_cases = []
+                seen_ids = set()
+                merged_variables = {}
+                for name in selected_for_merge:
+                    ts = load_test_set(name)
+                    if isinstance(ts.get("variables"), dict):
+                        merged_variables.update(ts["variables"])
+                    for case in ts.get("cases", []):
+                        cid = case.get("id")
+                        if cid in seen_ids:
+                            case = dict(case)
+                            case["id"] = generate_unique_id()
+                        seen_ids.add(case["id"])
+                        merged_cases.append(case)
+                st.session_state.merged_test_set = {
+                    "name": f"合并集_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                    "description": f"由{', '.join(selected_for_merge)}合并而成",
+                    "variables": merged_variables,
+                    "cases": merged_cases
+                }
+                st.session_state.page = "test_manager"
+                st.session_state.current_test_set = st.session_state.merged_test_set
+                st.success(f"已合并{len(selected_for_merge)}个测试集，可在编辑页进一步修改后保存")
+                st.rerun()
+        with op_col2:
+            del_name = st.selectbox("删除测试集", options=test_set_list, key="delete_test_set_select")
+
+            # Use session state to track pending deletion
+            confirm_key = f"confirm_del_{del_name}"
+            pending_deletion_key = "test_set_pending_deletion"
+
+            # Button to initiate deletion confirmation
+            if st.button("🗑️ 删除", use_container_width=True):
+                if del_name:
+                    st.session_state[pending_deletion_key] = del_name
+                    # Force rerun to show confirmation checkbox immediately
                     st.rerun()
-        
-        # 导入测试集
+
+            # Display confirmation checkbox if a test set is pending deletion
+            if pending_deletion_key in st.session_state and st.session_state[pending_deletion_key] == del_name:
+                st.warning(f"你确定要删除测试集 '{del_name}' 吗？此操作无法撤销。")
+                confirm = st.checkbox("是的，确认删除", key=confirm_key)
+
+                if confirm:
+                    # Perform deletion if confirmed
+                    if delete_test_set(del_name):
+                        st.success(f"测试集 '{del_name}' 已删除")
+                        # Clean up session state if the deleted set was the current one
+                        current_set = st.session_state.get("current_test_set")
+                        if current_set is not None and current_set.get("name") == del_name:
+                             if "current_test_set" in st.session_state:
+                                 del st.session_state.current_test_set
+                             if "current_case" in st.session_state:
+                                 del st.session_state.current_case
+                             if "current_case_index" in st.session_state:
+                                 del st.session_state.current_case_index
+
+                        del st.session_state[pending_deletion_key] # Clear pending state
+                        st.rerun() # Rerun to refresh the list and remove confirmation UI
+                    else:
+                        st.error("删除测试集时出错，可能文件不存在或权限不足。")
+                        del st.session_state[pending_deletion_key] # Clear pending state even on error
+                        st.rerun() # Rerun to remove confirmation UI
+            # If the selected test set changes while confirmation is pending, clear the pending state
+            elif pending_deletion_key in st.session_state and st.session_state[pending_deletion_key] != del_name:
+                 del st.session_state[pending_deletion_key]
+        with op_col3:
+            if st.button("➕ 新建测试集", use_container_width=True):
+                st.session_state.current_test_set = {
+                    "name": f"新测试集_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                    "description": "",
+                    "variables": {},
+                    "cases": [
+                        {
+                            "id": generate_unique_id(),
+                            "description": "测试用例1",
+                            "variables": {},
+                            "user_input": "这里填写用户的输入内容。",
+                            "expected_output": "这里填写期望的模型输出内容。评估将基于此内容判断模型响应的质量。",
+                            "evaluation_criteria": {
+                                "accuracy": "评估响应与期望输出的匹配程度",
+                                "completeness": "评估响应是否包含所有必要信息",
+                                "relevance": "评估响应与提示词的相关性",
+                                "clarity": "评估响应的清晰度和可理解性"
+                            }
+                        }
+                    ]
+                }
+                if "selected_case_index" in st.session_state:
+                    del st.session_state.selected_case_index
+                st.rerun()
+        st.divider()
+
+        # ======= 测试集列表区 =======
+        st.markdown("#### 测试集列表")
+        if test_set_list:
+            for test_set_name in test_set_list:
+                row_col1, row_col2, row_col3 = st.columns([6,1,1])
+                with row_col1:
+                    st.write(f"**{test_set_name}**")
+                with row_col2:
+                    if st.button("编辑", key=f"edit_{test_set_name}", use_container_width=True):
+                        st.session_state.current_test_set = load_test_set(test_set_name)
+                        # 兼容旧版本：检查并确保所有测试用例都有唯一ID
+                        if "current_test_set" in st.session_state:
+                            cases = st.session_state.current_test_set.get("cases", [])
+                            ids_seen = set()
+                            for i, case in enumerate(cases):
+                                if "id" not in case or not case["id"] or case["id"] in ids_seen:
+                                    case["id"] = generate_unique_id()
+                                ids_seen.add(case["id"])
+                        if "selected_case_index" in st.session_state:
+                            del st.session_state.selected_case_index
+                        st.rerun()
+                with row_col3:
+                    from config import TEST_SETS_DIR
+                    file_path = TEST_SETS_DIR / f"{test_set_name}.json"
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        test_set_data = f.read()
+                    st.download_button(
+                        label="导出",
+                        data=test_set_data,
+                        file_name=f"{test_set_name}.json",
+                        mime="application/json",
+                        use_container_width=True,
+                        key=f"export_{test_set_name}"
+                    )
+        else:
+            st.info("暂无测试集，请新建或导入")
+        st.divider()
+
+        # ======= 导入/示例区 =======
+        st.markdown("#### 导入/示例")
         with st.expander("导入测试集"):
             upload_file = st.file_uploader("上传JSON测试集文件", type=["json"])
             if upload_file is not None:
                 try:
                     uploaded_test_set = json.load(upload_file)
                     if st.button("确认导入"):
-                        # 确保导入的测试用例有唯一ID
                         if "cases" in uploaded_test_set:
                             ids_seen = set()
                             for case in uploaded_test_set["cases"]:
                                 if "id" not in case or not case["id"] or case["id"] in ids_seen:
                                     case["id"] = generate_unique_id()
                                 ids_seen.add(case["id"])
-                        
                         st.session_state.current_test_set = uploaded_test_set
-                        # 初始化编辑状态
                         if "selected_case_index" in st.session_state:
                             del st.session_state.selected_case_index
                         st.success("测试集导入成功")
                         st.rerun()
                 except json.JSONDecodeError:
                     st.error("文件格式错误，请上传有效的JSON文件")
-        
-        # 添加测试集示例展示
         with st.expander("测试集示例结构"):
-            # 使用简单的代码块展示示例，不添加任何自定义滚动容器
             st.code("""
 {
   "name": "情感分析测试集",
@@ -279,14 +367,18 @@ def render_test_manager():
                         }
                         config = load_config()
                         evaluator_model = config.get("evaluator_model", "gpt-4")
-                        # 生成目标描述
-                        test_purpose = f"{test_set_desc or test_set_name}。请生成{gen_count}个高质量测试用例，覆盖不同场景和边界。"
+                        # 修复正则表达式，去除乱码字符，改为非贪婪匹配
+                        import re
+                        base_purpose = test_set_desc or test_set_name
+                        base_purpose = re.sub(r"请生成\d+个.*?测试用例.*?", "", base_purpose)
+                        test_purpose = f"{base_purpose}。请生成{gen_count}个高质量测试用例，覆盖不同场景和边界。"
                         try:
                             evaluator = PromptEvaluator()
                             result = evaluator.generate_test_cases(
                                 evaluator_model,
                                 test_purpose,
-                                example_case
+                                example_case,
+                                target_count=gen_count
                             )
                             if "error" in result:
                                 st.error(f"生成测试用例失败: {result['error']}")
@@ -301,7 +393,7 @@ def render_test_manager():
                                     test_set["cases"].append(tc)
                                     added_count += 1
                                 save_test_set(test_set["name"], test_set)
-                                st.success(f"成功生成并添加 {added_count} 个测试用例到测试集 '{test_set['name']}'")
+                                st.success(f"成功生成并添加 {added_count} 个测试用例到测试集 '{test_set['name']}' (目标: {gen_count})")
                                 st.rerun()
                         except Exception as e:
                             st.error(f"生成测试用例时发生异常: {e}")
@@ -434,6 +526,8 @@ def render_test_manager():
                 with col1:
                     new_id = st.text_input("用例ID", value=case.get("id", ""))
                     new_desc = st.text_input("描述", value=case.get("description", ""))
+                    new_user_input = st.text_area("用户输入", value=case.get("user_input", ""), height=80)
+                    new_expected_output = st.text_area("期望输出", value=case.get("expected_output", ""), height=80)
                 
                 with col2:
                     st.write("")

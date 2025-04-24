@@ -284,6 +284,17 @@ DEFAULT_SYSTEM_TEMPLATES = {
             }
         },
         "is_system": True
+    },
+    "zero_shot_optimizer_template": {
+        "name": "zero_shot_optimizer_template",
+        "description": "用于0样本优化的提示词模板",
+        "template": """你是一个专业的提示词工程专家。请根据以下任务信息，生成3个高质量的AI提示词，每个提示词风格和侧重点不同，并给出优化策略和预期改进说明。\n\n任务描述:\n{{task_description}}\n\n任务目标:\n{{task_goal}}\n\n约束条件:\n{{constraints}}\n\n请生成3个不同方向的优化版本。每个版本需包含：\n1. 优化后的提示词内容\n2. 应用的优化策略\n3. 预期的效果改进\n\n请按以下JSON格式返回：\n```json\n{\n  \"optimized_prompts\": [\n    {\n      \"prompt\": \"优化后的提示词内容1\",\n      \"strategy\": \"应用的优化策略说明\",\n      \"expected_improvements\": \"预期的效果改进\"\n    },\n    {\n      \"prompt\": \"优化后的提示词内容2\",\n      \"strategy\": \"应用的优化策略说明\",\n      \"expected_improvements\": \"预期的效果改进\"\n    },\n    {\n      \"prompt\": \"优化后的提示词内容3\",\n      \"strategy\": \"应用的优化策略说明\",\n      \"expected_improvements\": \"预期的效果改进\"\n    }\n  ]\n}\n```\n仅返回JSON格式的优化结果，不要包含其他文本。""",
+        "variables": {
+            "task_description": {"description": "任务描述", "default": "请对用户输入进行情感分析"},
+            "task_goal": {"description": "任务目标", "default": "输出情感类别和置信度分数"},
+            "constraints": {"description": "约束条件", "default": "输出需简洁明了，禁止输出与情感无关内容"}
+        },
+        "is_system": True
     }
 }
 
@@ -456,8 +467,25 @@ def get_result_list() -> List[str]:
     return [f.name.replace(".json", "") for f in RESULTS_DIR.glob("*.json")]
 
 def get_test_set_list() -> List[str]:
-    """获取所有测试集列表"""
-    return [f.name.replace(".json", "") for f in TEST_SETS_DIR.glob("*.json")]
+    """获取所有测试集列表，按修改时间从新到旧排序"""
+    files = list(TEST_SETS_DIR.glob('*.json'))
+    files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    return [f.name.replace('.json', '') for f in files]
+
+def delete_test_set(name: str) -> bool:
+    """删除测试集
+    
+    Args:
+        name: 测试集名称
+        
+    Returns:
+        bool: 删除成功返回True，否则返回False
+    """
+    file_path = TEST_SETS_DIR / f"{name}.json"
+    if file_path.exists():
+        file_path.unlink()
+        return True
+    return False
 
 def save_provider_config(provider_name: str, config: Dict) -> None:
     """保存提供商配置"""

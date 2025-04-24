@@ -247,67 +247,104 @@ class PromptEvaluator:
                 "is_local_evaluation": True
             }
 
-    def generate_test_cases(self, model: str, test_purpose: str, example_case: Dict) -> Dict:
-        """生成新的测试用例
-        
+    def generate_test_cases(self, model: str, test_purpose: str, example_case: Dict, target_count: int = None) -> Dict:
+        """生成新的测试用例，支持自动补足数量
         Args:
             model: 模型名称
             test_purpose: 测试目的
             example_case: 示例测试用例，需要包含id, description, user_input, expected_output, evaluation
-        
+            target_count: 期望生成的测试用例数量（可选）
         Returns:
             Dict: 生成的测试用例或错误信息
         """
         if self.use_local_evaluation:
             return {"error": "本地评估模式不支持生成测试用例，请配置评估模型API密钥"}
-        
         # 构建示例测试用例的文本表示
         example_evaluation = example_case.get("evaluation", {})
         scores = example_evaluation.get("scores", {})
         scores_text = ""
         for dimension, score in scores.items():
             scores_text += f"{dimension}: {score}/100, "
-        
         example_text = f"""用例ID: {example_case.get('id', 'test-1')}
 描述: {example_case.get('description', '示例测试')}
-用户输入: "{example_case.get('user_input', '')}"
-期望输出: "{example_case.get('expected_output', '')}"
+用户输入: \"{example_case.get('user_input', '')}\"
+期望输出: \"{example_case.get('expected_output', '')}\"
 评估结果: {scores_text.rstrip(', ')}"""
-        
-        # 构建测试用例生成提示词
-        template = self.testcase_generator_template.get("template", "")
-        generator_prompt = template\
-            .replace("{{model}}", model)\
-            .replace("{{test_purpose}}", test_purpose)\
-            .replace("{{example_test_case}}", example_text)
-        
-        generator_params = {
-            "temperature": 0.7,  # 适当的创造性
-            "max_tokens": 2000
-        }
-        
-        try:
-            # 使用同步方式调用API客户端
-            result = self.client.generate_sync(generator_prompt, self.evaluator_model, generator_params)
-            response_text = result.get("text", "")
-            
-            # 尝试解析JSON结果
-            try:
-                # 清理可能的前后缀文本
-                if "```json" in response_text:
-                    response_text = response_text.split("```json")[1].split("```")[0].strip()
-                elif "```" in response_text:
-                    response_text = response_text.split("```")[1].split("```")[0].strip()
-                
-                test_cases_data = json.loads(response_text)
-                return test_cases_data
-            except json.JSONDecodeError:
-                return {
-                    "error": "测试用例生成结果格式错误",
-                    "raw_response": response_text
-                }
-                
-        except Exception as e:
-            return {
-                "error": f"生成测试用例时出错: {str(e)}"
+        # 打印调用模型的日志到console
+        print(f"[TestCaseGen] 使用模型: {self.evaluator_model}, 提供商: {self.provider}, 测试用例ID: {example_case.get('id', 'test-1')}, 提示词模版: testcase_generator")
+        # 自动补足逻辑
+        all_cases = []
+        max_try = 10  # 最多尝试10次，防止死循环
+        tried = 0
+        while True:
+            # 动态调整test_purpose中的数量描述
+            if target_count:
+                left = target_count - len(all_cases)
+                if left <= 0:
+                    break
+                purpose = test_purpose
+                import re
+                # 用正确的正则替换“请生成N个”部分
+                purpose, n_sub = re.subn(r"请生成\d+个", f"请生成{left}个", purpose)
+                if n_sub == 0:
+                    # 如果原本没有数量描述，直接加
+                    purpose = f"{purpose}，请生成{left}个高质量测试用例，覆盖不同场景和边界。"
+            else:
+                purpose = test_purpose
+            # 构建生成prompt
+            template = self.testcase_generator_template.get("template", "")
+            generator_prompt = template\
+                .replace("{{model}}", model)\
+                .replace("{{test_purpose}}", purpose)\
+                .replace("{{example_test_case}}", example_text)
+            generator_params = {
+                "temperature": 0.7,
+                "max_tokens": 2000
             }
+            try:
+                result = self.client.generate_sync(generator_prompt, self.evaluator_model, generator_params)
+                response_text = result.get("text", "")
+                # 尝试解析JSON结果
+                try:
+                    if "```json" in response_text:
+                        response_text = response_text.split("```json")[1].split("```", 1)[0].strip()
+                    elif "```" in response_text:
+                        response_text = response_text.split("```", 1)[1].split("```", 1)[0].strip()
+                    test_cases_data = json.loads(response_text)
+                    cases = test_cases_data.get("test_cases", []) if isinstance(test_cases_data, dict) else test_cases_data
+                    # 去重（按user_input+expected_output）
+                    exist_keys = set((c.get("user_input", "")+"|||"+c.get("expected_output", "")) for c in all_cases)
+                    for c in cases:
+                        key = c.get("user_input", "")+"|||"+c.get("expected_output", "")
+                        if key not in exist_keys:
+                            all_cases.append(c)
+                            exist_keys.add(key)
+                    if not target_count:
+                        break  # 只调用一次
+                except json.JSONDecodeError:
+                    return {
+                        "error": "测试用例生成结果格式错误",
+                        "raw_response": response_text
+                    }
+            except Exception as e:
+                return {
+                    "error": f"生成测试用例时出错: {str(e)}"
+                }
+            tried += 1
+            if tried >= max_try:
+                break
+        # 返回结果
+        return {"test_cases": all_cases[:target_count] if target_count else all_cases}
+
+    def run_evaluation(self, prompt, test_set, model=None, provider=None):
+        """批量评估测试用例，返回评估结果列表"""
+        results = []
+        for case in test_set:
+            user_input = case.get("user_input", "")
+            expected_output = case.get("expected_output", "")
+            criteria = case.get("evaluation_criteria", {})
+            eval_result = self.evaluate_response_sync(
+                user_input, expected_output, criteria, prompt
+            )
+            results.append(eval_result)
+        return results

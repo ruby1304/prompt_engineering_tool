@@ -52,13 +52,34 @@ def render_user_templates():
                 }
             }
             st.session_state.editing_system_template = False
+            st.session_state.is_new_template = True
         
         if template_list:
             st.write("选择现有模板:")
             for template_name in template_list:
-                if st.button(f"📄 {template_name}", key=f"sel_{template_name}"):
-                    st.session_state.current_prompt_template = load_template(template_name)
-                    st.session_state.editing_system_template = False
+                cols = st.columns([0.8, 0.2])
+                with cols[0]:
+                    if st.button(f"📄 {template_name}", key=f"sel_{template_name}"):
+                        st.session_state.current_prompt_template = load_template(template_name)
+                        st.session_state.editing_system_template = False
+                        st.session_state.is_new_template = False
+                with cols[1]:
+                    if st.button("🗑️", key=f"del_{template_name}"):
+                        if st.session_state.get("delete_confirm", None) == template_name:
+                            # 真正删除
+                            from config import TEMPLATES_DIR
+                            import os
+                            file_path = TEMPLATES_DIR / f"{template_name}.json"
+                            if file_path.exists():
+                                os.remove(file_path)
+                                st.success(f"模板 '{template_name}' 已删除")
+                                st.session_state.current_prompt_template = None
+                                st.session_state.is_new_template = None
+                                st.session_state.delete_confirm = None
+                                st.experimental_rerun()
+                        else:
+                            st.session_state.delete_confirm = template_name
+                            st.warning(f"再次点击🗑️确认删除 '{template_name}'！")
     
     with col_right:
         # 主内容: 编辑区
@@ -248,6 +269,15 @@ def render_template_editor(template):
         # 如果是系统模板，确保设置is_system标志
         if st.session_state.get("editing_system_template", False):
             template["is_system"] = True
-        
-        save_template(template["name"], template)
-        st.success(f"模板 '{template['name']}' 已保存")
+        # 新建时检查重名
+        if st.session_state.get("is_new_template", False):
+            from config import get_template_list
+            if template["name"] in get_template_list():
+                st.error(f"模板名 '{template['name']}' 已存在，请更换名称")
+                return
+            save_template(template["name"], template)
+            st.session_state.is_new_template = False
+            st.success(f"新模板 '{template['name']}' 已保存")
+        else:
+            save_template(template["name"], template)
+            st.success(f"模板 '{template['name']}' 已保存")
