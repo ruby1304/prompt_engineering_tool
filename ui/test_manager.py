@@ -452,23 +452,9 @@ def render_test_manager():
                 tab1, tab2, tab3 = st.tabs(["📝 输入与输出", "🔧 变量", "📊 评估标准"])
                 
                 with tab1:
-                    # 用户输入和期望输出
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.subheader("用户输入")
-                        new_user_input = st.text_area(
-                            "输入内容", 
-                            value=case.get("user_input", ""), 
-                            height=300
-                        )
-                    
-                    with col2:
-                        st.subheader("期望输出")
-                        new_expected_output = st.text_area(
-                            "期望输出", 
-                            value=case.get("expected_output", ""), 
-                            height=300
-                        )
+                    # 用通用组件展示用例详情、响应和评估结果
+                    from ui.components import display_test_case_details
+                    display_test_case_details(case, show_system_prompt=True, inside_expander=True)
                 
                 with tab2:
                     # 变量编辑区

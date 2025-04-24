@@ -13,7 +13,9 @@ from utils.common import (
     get_dimension_scores, 
     create_dimension_radar_chart,
     run_test,
-    display_template_info
+    display_template_info,
+    save_optimized_template,
+    compare_dimension_performance
 )
 from ui.components import (
     display_test_summary,
@@ -183,35 +185,8 @@ def display_ab_test_results(ab_results):
     original_dims = get_dimension_scores(original_results)
     optimized_dims = get_dimension_scores(optimized_results)
     
-    # 创建维度雷达图
-    st.subheader("维度表现对比")
-    
-    fig = create_dimension_radar_chart(
-        [original_dims, optimized_dims],
-        ["原始提示词", "优化提示词"],
-        "提示词版本维度表现对比"
-    )
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # 显示维度改进
-    st.subheader("维度改进分析")
-    
-    improvements = {}
-    for dim in original_dims:
-        if original_dims[dim] > 0:
-            dim_improvement = (optimized_dims[dim] - original_dims[dim]) / original_dims[dim] * 100
-        else:
-            dim_improvement = 0
-        improvements[dim] = dim_improvement
-    
-    improvement_df = pd.DataFrame({
-        "维度": list(improvements.keys()),
-        "原始分数": [original_dims[dim] for dim in improvements],
-        "优化分数": [optimized_dims[dim] for dim in improvements],
-        "改进百分比": [f"{improvements[dim]:.1f}%" for dim in improvements]
-    })
-    
-    st.dataframe(improvement_df, use_container_width=True)
+    # 维度对比与改进表格
+    compare_dimension_performance([original_results, optimized_results], ["原始提示词", "优化提示词"])
     
     # 显示用例级比较
     st.subheader("用例级比较")
@@ -262,13 +237,8 @@ def display_ab_test_results(ab_results):
         if st.button("保存优化提示词为模板", type="primary"):
             optimized_template = st.session_state.ab_test_optimized
             new_template = dict(optimized_template)
-            current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-            
-            new_template["name"] = f"{new_template.get('name', 'optimized')}_{current_time}_improved"
-            new_template["description"] = f"通过A/B测试验证的优化提示词 (提升: {improvement:.1f}%)"
-            
-            save_template(new_template["name"], new_template)
-            st.success(f"已将优化提示词保存为新模板: {new_template['name']}")
+            new_name = save_optimized_template(new_template, {"prompt": new_template.get("template", ""), "strategy": new_template.get("description", "")})
+            st.success(f"已将优化提示词保存为新模板: {new_name}")
     
     elif optimized_avg < original_avg:
         st.error(f"❌ 优化提示词整体表现不如原始提示词，下降了 {abs(improvement):.1f}%")

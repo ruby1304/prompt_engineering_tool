@@ -14,9 +14,10 @@ from utils.common import (
     calculate_average_score, 
     get_dimension_scores, 
     analyze_response_stability,
-    create_dimension_radar_chart,
     create_score_bar_chart,
-    run_test
+    run_test,
+    save_optimized_template,
+    compare_dimension_performance
 )
 from ui.components import (
     display_test_summary,
@@ -230,62 +231,8 @@ def display_batch_test_results(batch_results):
     stability_df = pd.DataFrame(stability_data)
     st.dataframe(stability_df, use_container_width=True)
     
-    # 创建维度雷达图对比
-    st.subheader("维度表现对比")
-    
-    # 获取原始提示词的维度分数
-    original_dimensions = get_dimension_scores(original_results)
-    
-    # 获取所有优化版本的维度分数
-    optimized_dimensions = []
-    for result in optimized_results_list:
-        opt_dims = get_dimension_scores(result)
-        optimized_dimensions.append(opt_dims)
-    
-    # 准备数据
-    dimension_scores_list = [original_dimensions] + optimized_dimensions
-    labels = ["原始提示词"] + [f"优化版本 {i+1}" for i in range(len(optimized_dimensions))]
-    
-    # 创建雷达图
-    fig = create_dimension_radar_chart(dimension_scores_list, labels, "提示词版本维度表现对比")
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # 显示各维度提升情况
-    st.subheader("各维度改进情况")
-    
-    # 创建表格数据
-    improvement_data = []
-    dimensions = list(original_dimensions.keys())
-    
-    for i, opt_dims in enumerate(optimized_dimensions):
-        improvements = {}
-        
-        for dim in dimensions:
-            if original_dimensions[dim] > 0:
-                improvement = (opt_dims[dim] - original_dimensions[dim]) / original_dimensions[dim] * 100
-            else:
-                improvement = 0
-                
-            improvements[dim] = improvement
-        
-        # 计算总体改进
-        avg_improvement = sum(improvements.values()) / len(improvements) if improvements else 0
-        
-        row = {
-            "版本": f"优化版本 {i+1}",
-            "总体改进": f"{avg_improvement:.1f}%"
-        }
-        
-        for dim in dimensions:
-            row[dim] = f"{improvements[dim]:.1f}%"
-        
-        improvement_data.append(row)
-    
-    # 显示表格
-    if improvement_data:
-        st.dataframe(pd.DataFrame(improvement_data), use_container_width=True)
-    else:
-        st.info("没有足够的数据来计算改进情况")
+    # 维度对比与改进表格
+    compare_dimension_performance([original_results] + optimized_results_list, ["原始提示词"] + [f"优化版本 {i+1}" for i in range(len(optimized_results_list))])
     
     # 添加详细比较功能
     st.subheader("详细对比分析")
@@ -368,38 +315,17 @@ def display_case_comparisons(compare_results, compare_versions):
         
         # 显示用例详情
         with st.expander(f"用例 {case_index+1}: {case_data[0]['case'].get('case_description', case_data[0]['case'].get('case_id', ''))}"):
-            # 显示用户输入和期望输出
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("**用户输入:**")
-                st.code(case_data[0]['case'].get("user_input", ""))
-            
-            with col2:
-                st.markdown("**期望输出:**")
-                st.code(case_data[0]['case'].get("expected_output", ""))
-            
             # 为每个比较版本创建选项卡
             tabs = st.tabs([data["version"] for data in case_data])
-            
-            # 在每个选项卡中显示详细信息
+            from ui.components import display_test_case_details
             for i, tab in enumerate(tabs):
                 with tab:
                     data = case_data[i]
-                    
-                    # 显示平均分数
                     st.metric("平均评分", f"{data['avg_score']:.1f}")
-                    
                     if i == best_case_index and data["avg_score"] > 0:
                         st.success("✓ 此版本在当前用例中表现最佳")
-                    
-                    # 显示系统提示
-                    st.subheader("系统提示")
-                    st.code(data["case"].get("prompt", ""))
-                    
-                    # 显示所有响应
-                    st.subheader("响应")
-                    display_response_tabs(data["responses"])
+                    # 用通用组件展示用例详情、响应、评估
+                    display_test_case_details(data["case"], show_system_prompt=True, inside_expander=True)
 
 def display_recommendation(best_template, best_score, best_label, original_avg):
     """显示推荐使用的提示词"""
@@ -418,18 +344,7 @@ def display_recommendation(best_template, best_score, best_label, original_avg):
         
         # 保存推荐提示词
         if st.button("保存推荐提示词为模板", type="primary"):
-            if best_template:
-                new_template = dict(best_template)
-                current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-                
-                if best_label == "原始提示词":
-                    new_template["name"] = f"{best_template.get('name', 'template')}_{current_time}_recommended"
-                    new_template["description"] = f"推荐使用的原始提示词 (得分: {best_score:.1f})"
-                else:
-                    new_template["name"] = f"{best_template.get('name', 'template')}_{current_time}_recommended"
-                    new_template["description"] = f"推荐使用的优化提示词 (得分: {best_score:.1f})"
-                
-                save_template(new_template["name"], new_template)
-                st.success(f"已将推荐提示词保存为新模板: {new_template['name']}")
+            new_name = save_optimized_template(best_template, {"prompt": best_template.get("template", ""), "strategy": best_label})
+            st.success(f"已将推荐提示词保存为新模板: {new_name}")
     else:
         st.warning("无法确定推荐提示词，请检查评估结果")

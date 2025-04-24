@@ -74,88 +74,16 @@ def render_results_viewer():
     
     # 显示详细测试结果
     st.subheader("详细测试结果")
-    
+    from ui.components import display_test_case_details
     for prompt_name, prompt_data in results.items():
         with st.expander(f"提示词: {prompt_name}"):
             st.markdown(f"**模板描述**: {prompt_data.get('template', {}).get('description', '无描述')}")
             st.markdown(f"**测试集**: {prompt_data.get('test_set', '未知')}")
             st.markdown(f"**测试模型**: {', '.join(prompt_data.get('models', []))}")
-            
-            # 显示测试用例结果
+            # 用通用组件展示每个用例详情
             for i, case in enumerate(prompt_data.get("test_cases", [])):
                 st.markdown(f"### 测试用例 {i+1}: {case.get('case_description', case.get('case_id', ''))}")
-                
-                # 使用列替代嵌套的expander
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.markdown("**系统提示:**")
-                    st.code(case.get("prompt", ""))
-                
-                with col2:
-                    st.markdown("**用户输入:**")
-                    st.code(case.get("user_input", ""))
-                
-                with col3:
-                    st.markdown("**期望输出:**")
-                    st.code(case.get("expected_output", ""))
-                
-                # 显示模型响应
-                st.markdown("**模型响应:**")
-                for resp in case.get("model_responses", []):
-                    model = resp.get("model", "未知模型")
-                    attempt = resp.get("attempt", 0)
-                    
-                    resp_col1, resp_col2 = st.columns([3, 1])
-                    
-                    with resp_col1:
-                        st.markdown(f"**模型**: {model}, **尝试**: #{attempt}")
-                    
-                    with resp_col2:
-                        if resp.get("error"):
-                            st.error("出错")
-                        elif resp.get("usage"):
-                            st.info(f"Token使用: {resp.get('usage', {}).get('total_tokens', '未知')}")
-                    
-                    if resp.get("error"):
-                        st.error(resp.get("error"))
-                    else:
-                        st.code(resp.get("response", "无响应"))
-                
-                # 显示评估结果
-                eval_result = case.get("evaluation", {})
-                
-                if eval_result:
-                    st.markdown("### 评估结果")
-                    
-                    if "error" in eval_result:
-                        st.error(f"评估错误: {eval_result['error']}")
-                        if "raw_response" in eval_result and eval_result["raw_response"]:
-                            st.text(eval_result["raw_response"])
-                    else:
-                        # 显示本地评估标记
-                        if eval_result.get("is_local_evaluation", False):
-                            st.warning("⚠️ 以下是本地评估结果，非AI评估模型生成")
-
-                        # 显示评分
-                        if "scores" in eval_result:
-                            score_cols = st.columns(len(eval_result["scores"]))
-                            for i, (dim, score) in enumerate(eval_result["scores"].items()):
-                                with score_cols[i]:
-                                    st.metric(dim, f"{score:.1f}")
-
-                        # 显示总分
-                        if "overall_score" in eval_result:
-                            st.metric("总分", f"{eval_result['overall_score']:.1f}")
-                        
-                        # 显示分析
-                        if "analysis" in eval_result:
-                            st.markdown("**分析**:")
-                            st.write(eval_result["analysis"])
-                        
-                        # 显示Token信息
-                        if "prompt_info" in eval_result:
-                            st.info(f"提示词Token数: {eval_result['prompt_info'].get('token_count', '未知')}")
+                display_test_case_details(case, show_system_prompt=True, inside_expander=True)
     
     # 提示词优化功能
     st.divider()

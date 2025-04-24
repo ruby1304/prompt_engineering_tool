@@ -224,6 +224,20 @@ async def evaluate_response(evaluator, response_text, expected_output, criteria,
     except Exception as e:
         return {"error": str(e)}
 
+def render_prompt_template(template: dict, test_set: dict, case: dict) -> str:
+    """通用模板渲染函数，合并变量并替换模板中的变量"""
+    prompt_template = template.get("template", "")
+    # 合并全局变量和用例变量
+    variables = {**test_set.get("variables", {}), **case.get("variables", {})}
+    # 如果变量未提供，使用提示词模板中的默认值
+    for var_name in template.get("variables", {}):
+        if var_name not in variables:
+            variables[var_name] = template["variables"][var_name].get("default", "")
+    # 替换模板中的变量
+    for var_name, var_value in variables.items():
+        prompt_template = prompt_template.replace(f"{{{{{var_name}}}}}", var_value)
+    return prompt_template
+
 def run_test(template, model, test_set, model_provider=None, repeat_count=1, temperature=0.7):
     """运行单提示词单模型测试"""
     # 准备结果存储
@@ -275,19 +289,7 @@ def run_test(template, model, test_set, model_provider=None, repeat_count=1, tem
         status_text.text(f"正在测试用例 {case_idx+1}/{total_cases}: {case_id}")
         
         # 渲染提示词（替换变量）
-        prompt_template = template.get("template", "")
-        
-        # 应用全局变量和用例变量
-        variables = {**test_set.get("variables", {}), **case.get("variables", {})}
-        
-        # 如果变量未提供，使用提示词模板中的默认值
-        for var_name in template.get("variables", {}):
-            if var_name not in variables:
-                variables[var_name] = template["variables"][var_name].get("default", "")
-        
-        # 应用变量到提示词模板
-        for var_name, var_value in variables.items():
-            prompt_template = prompt_template.replace(f"{{{{{var_name}}}}}", var_value)
+        prompt_template = render_prompt_template(template, test_set, case)
         
         # 获取用户输入
         user_input = case.get("user_input", "")
@@ -465,3 +467,46 @@ def generate_evaluation_criteria(case_description, user_input, expected_output):
                 "clarity": "评估响应的清晰度和可理解性"
             }
         }
+
+def save_optimized_template(template: dict, opt_prompt: dict, index: int = 0) -> str:
+    """保存优化后的提示词为新模板，返回新模板名称"""
+    from config import save_template
+    from datetime import datetime
+    current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+    new_template = dict(template)
+    new_template["name"] = f"{template.get('name', 'template')}_{current_time}_v{index+1}"
+    new_template["description"] = f"从 '{template.get('name', 'unknown')}' 优化: {opt_prompt.get('strategy', '')}"
+    new_template["template"] = opt_prompt.get("prompt", "")
+    save_template(new_template["name"], new_template)
+    return new_template["name"]
+
+def compare_dimension_performance(results_list, labels, section_title="维度表现对比", show_table=True):
+    """通用维度对比雷达图和改进表格展示"""
+    import streamlit as st
+    import pandas as pd
+    from .common import get_dimension_scores, create_dimension_radar_chart
+    st.subheader(section_title)
+    # 计算各版本维度分数
+    dimension_scores_list = [get_dimension_scores(res) for res in results_list]
+    # 创建雷达图
+    fig = create_dimension_radar_chart(dimension_scores_list, labels, section_title)
+    st.plotly_chart(fig, use_container_width=True)
+    if show_table and len(dimension_scores_list) > 1:
+        # 只对比第一个和后续版本
+        base = dimension_scores_list[0]
+        improvement_data = []
+        for idx, dims in enumerate(dimension_scores_list[1:]):
+            improvements = {}
+            for dim in base:
+                if base[dim] > 0:
+                    improvement = (dims[dim] - base[dim]) / base[dim] * 100
+                else:
+                    improvement = 0
+                improvements[dim] = improvement
+            row = {"版本": labels[idx+1]}
+            for dim in base:
+                row[dim] = f"{improvements[dim]:.1f}%"
+            improvement_data.append(row)
+        if improvement_data:
+            st.subheader("各维度改进情况")
+            st.dataframe(pd.DataFrame(improvement_data), use_container_width=True)

@@ -19,7 +19,8 @@ from utils.common import (
     get_dimension_scores, 
     create_dimension_radar_chart,
     run_test,
-    display_template_info
+    display_template_info,
+    save_optimized_template
 )
 from ui.components import (
     display_test_summary,
@@ -377,15 +378,8 @@ def display_optimized_prompts(optimized_prompts, template, model, model_provider
             
             with col1:
                 if st.button(f"💾 保存为新模板", key=f"save_opt_{i}"):
-                    # 复制原始模板，替换提示词内容
-                    new_template = dict(template)
-                    current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    new_template["name"] = f"{template.get('name', 'template')}_{current_time}_v{i+1}"
-                    new_template["description"] = f"从 '{template.get('name', 'unknown')}' 优化: {opt_prompt.get('strategy', '')}"
-                    new_template["template"] = opt_prompt.get("prompt", "")
-                    
-                    save_template(new_template["name"], new_template)
-                    st.success(f"已保存为新模板: {new_template['name']}")
+                    new_name = save_optimized_template(template, opt_prompt, i)
+                    st.success(f"已保存为新模板: {new_name}")
             
             with col2:
                 if st.button(f"🔍 A/B测试", key=f"test_opt_{i}"):

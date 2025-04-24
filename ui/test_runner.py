@@ -9,6 +9,7 @@ from config import get_template_list, load_template, get_test_set_list, load_tes
 from models.api_clients import get_client, get_provider_from_model
 from models.token_counter import count_tokens, estimate_cost
 from utils.evaluator import PromptEvaluator
+from utils.common import render_prompt_template
 
 def render_test_runner():
     st.title("🧪 测试运行")
@@ -225,20 +226,8 @@ def run_tests(templates, test_set, selected_models, temperature, max_tokens, rep
             case_id = case["id"]
             status_text.text(f"正在测试模板 '{template_name}' 的用例 '{case_id}'")
             
-            # 渲染提示词（替换变量）
-            prompt_template = template["template"]
-            
-            # 应用全局变量和用例变量
-            variables = {**test_set.get("variables", {}), **case.get("variables", {})}
-            
-            # 如果变量未提供，使用提示词模板中的默认值
-            for var_name in template.get("variables", {}):
-                if var_name not in variables:
-                    variables[var_name] = template["variables"][var_name].get("default", "")
-
-            # 应用变量到提示词模板  
-            for var_name, var_value in variables.items():
-                prompt_template = prompt_template.replace(f"{{{{{var_name}}}}}", var_value)
+            # 使用通用渲染函数
+            prompt_template = render_prompt_template(template, test_set, case)
             
             # 获取用户输入
             user_input = case.get("user_input", "")
@@ -361,6 +350,15 @@ def run_tests(templates, test_set, selected_models, temperature, max_tokens, rep
     save_result(result_name, results)
     
     st.success(f"测试结果已保存: {result_name}")
+    
+    # 结果预览区域
+    from ui.components import display_test_case_details
+    st.subheader("测试结果预览")
+    for template_name, template_result in results.items():
+        st.markdown(f"#### 提示词模板: {template_name}")
+        for i, case in enumerate(template_result["test_cases"]):
+            st.markdown(f"测试用例 {i+1}: {case.get('case_description', case.get('case_id', '') )}")
+            display_test_case_details(case, show_system_prompt=True, inside_expander=False)
     
     # 建议跳转到结果查看页面
     st.session_state.last_result = result_name
