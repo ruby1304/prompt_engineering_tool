@@ -16,6 +16,18 @@ SYSTEM_TEMPLATES_DIR = DATA_DIR / "system_templates"  # 新增：系统提示词
 for directory in [DATA_DIR, TEMPLATES_DIR, TEST_SETS_DIR, RESULTS_DIR, PROVIDERS_DIR, SYSTEM_TEMPLATES_DIR]:
     directory.mkdir(exist_ok=True, parents=True)
 
+# 默认提供商配置
+DEFAULT_PROVIDER_CONFIG = {
+    "name": "",
+    "display_name": "",
+    "api_key": "",
+    "api_url": "",
+    "models": [],
+    "api_type": "rest",  # 可选：rest, websocket 等
+    "headers": {},  # 自定义请求头
+    "parameters": {}  # 自定义参数
+}
+
 # 默认配置
 DEFAULT_CONFIG = {
     "api_keys": {
@@ -43,7 +55,8 @@ DEFAULT_CONFIG = {
     "system_templates": {  # 新增：系统提示词模板类型
         "evaluator": "evaluator_template",
         "optimizer": "optimizer_template",
-        "criteria_generator": "criteria_generator_template"
+        "criteria_generator": "criteria_generator_template",
+        "testcase_generator": "testcase_generator_template"
     }
 }
 
@@ -215,33 +228,62 @@ DEFAULT_SYSTEM_TEMPLATES = {
             }
         },
         "is_system": True
-    }
-}
+    },
+    "testcase_generator_template": {
+        "name": "testcase_generator_template",
+        "description": "用于自动生成测试用例的提示词模板",
+        "template": """你是一位专业的测试用例设计专家。请根据以下测试结果，设计一组高质量的测试用例，用于评估AI模型的性能。
 
-# 默认提供商配置模板
-DEFAULT_PROVIDER_CONFIG = {
-    "name": "",                   # 提供商名称
-    "display_name": "",           # 显示名称
-    "api_key": "",                # API密钥
-    "base_url": "",               # API基础URL
-    "models": [],                 # 支持的模型列表
-    "api_type": "http",           # API类型: http, sdk, local
-    "message_format": "openai",   # 消息格式: openai, text
-    "price_input": 0.0,           # 输入价格 (每1000 tokens)
-    "price_output": 0.0,          # 输出价格 (每1000 tokens)
-    "headers": {                  # 请求头
-        "Content-Type": "application/json",
-        "Authorization": "Bearer {api_key}"
+评估模型: {{model}}
+测试目标: {{test_purpose}}
+
+以下是一个已有的测试用例及其评估结果的示例：
+{{example_test_case}}
+
+请设计3个新的测试用例，确保它们涵盖不同的场景和边界条件，能够全面测试模型的性能。每个测试用例应包含：
+1. 用例ID
+2. 描述
+3. 用户输入
+4. 期望输出
+5. 评估标准（针对准确性、完整性、相关性和清晰度）
+
+请按以下JSON格式返回测试用例：
+```json
+{
+  "test_cases": [
+    {
+      "id": "唯一的测试用例ID",
+      "description": "测试用例描述",
+      "user_input": "发送给模型的用户输入文本",
+      "expected_output": "期望模型生成的输出",
+      "evaluation_criteria": {
+        "accuracy": "准确性评估标准",
+        "completeness": "完整性评估标准",
+        "relevance": "相关性评估标准",
+        "clarity": "清晰度评估标准"
+      }
     },
-    "endpoints": {                # API端点
-        "chat": "/chat/completions"
-    },
-    "params_mapping": {           # 参数映射
-        "model": "model",
-        "messages": "messages",
-        "temperature": "temperature",
-        "max_tokens": "max_tokens",
-        "top_p": "top_p"
+    ...
+  ]
+}
+```
+
+请确保每个测试用例的输入和预期输出是真实可用的，能够实际用于测试。评估标准应该明确具体，便于衡量模型的表现。只返回JSON格式的测试用例，不要包含其他解释。""",
+        "variables": {
+            "model": {
+                "description": "要测试的模型名称",
+                "default": "gpt-4"
+            },
+            "test_purpose": {
+                "description": "测试目的",
+                "default": "测试模型在多种场景下的回答质量"
+            },
+            "example_test_case": {
+                "description": "示例测试用例",
+                "default": "用例ID: test-1\n描述: 测试模型对简单问题的回答\n用户输入: \"什么是机器学习？\"\n期望输出: \"机器学习是人工智能的一个子领域，它允许计算机系统从数据中学习和改进，而无需明确编程。\"\n评估结果: 准确性得分 85/100，完整性得分 75/100"
+            }
+        },
+        "is_system": True
     }
 }
 

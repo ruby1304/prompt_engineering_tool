@@ -24,6 +24,8 @@ class PromptEvaluator:
         
         # 获取评估模板
         self.evaluator_template = get_system_template("evaluator")
+        # 获取测试用例生成模板
+        self.testcase_generator_template = get_system_template("testcase_generator")
 
     async def evaluate_response(self, model_response: str, expected_output: str, 
                                criteria: Dict, prompt: str) -> Dict:
@@ -243,4 +245,69 @@ class PromptEvaluator:
                     "token_count": count_tokens(model_response),
                 },
                 "is_local_evaluation": True
+            }
+
+    def generate_test_cases(self, model: str, test_purpose: str, example_case: Dict) -> Dict:
+        """生成新的测试用例
+        
+        Args:
+            model: 模型名称
+            test_purpose: 测试目的
+            example_case: 示例测试用例，需要包含id, description, user_input, expected_output, evaluation
+        
+        Returns:
+            Dict: 生成的测试用例或错误信息
+        """
+        if self.use_local_evaluation:
+            return {"error": "本地评估模式不支持生成测试用例，请配置评估模型API密钥"}
+        
+        # 构建示例测试用例的文本表示
+        example_evaluation = example_case.get("evaluation", {})
+        scores = example_evaluation.get("scores", {})
+        scores_text = ""
+        for dimension, score in scores.items():
+            scores_text += f"{dimension}: {score}/100, "
+        
+        example_text = f"""用例ID: {example_case.get('id', 'test-1')}
+描述: {example_case.get('description', '示例测试')}
+用户输入: "{example_case.get('user_input', '')}"
+期望输出: "{example_case.get('expected_output', '')}"
+评估结果: {scores_text.rstrip(', ')}"""
+        
+        # 构建测试用例生成提示词
+        template = self.testcase_generator_template.get("template", "")
+        generator_prompt = template\
+            .replace("{{model}}", model)\
+            .replace("{{test_purpose}}", test_purpose)\
+            .replace("{{example_test_case}}", example_text)
+        
+        generator_params = {
+            "temperature": 0.7,  # 适当的创造性
+            "max_tokens": 2000
+        }
+        
+        try:
+            # 使用同步方式调用API客户端
+            result = self.client.generate_sync(generator_prompt, self.evaluator_model, generator_params)
+            response_text = result.get("text", "")
+            
+            # 尝试解析JSON结果
+            try:
+                # 清理可能的前后缀文本
+                if "```json" in response_text:
+                    response_text = response_text.split("```json")[1].split("```")[0].strip()
+                elif "```" in response_text:
+                    response_text = response_text.split("```")[1].split("```")[0].strip()
+                
+                test_cases_data = json.loads(response_text)
+                return test_cases_data
+            except json.JSONDecodeError:
+                return {
+                    "error": "测试用例生成结果格式错误",
+                    "raw_response": response_text
+                }
+                
+        except Exception as e:
+            return {
+                "error": f"生成测试用例时出错: {str(e)}"
             }

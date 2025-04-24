@@ -692,7 +692,7 @@ def test_evaluator_model():
         st.write(f"当前评估模型: **{current_evaluator}**")
         st.write(f"提供商: **{provider}**")
         st.write(f"API密钥状态: **{'已配置 ✅' if api_key else '未配置 ❌'}**")
-        st.write(f"本地评估: **{'启用 ✅' if config.get('use_local_evaluation', False) else '禁用 ❌'}**")
+        st.write(f"本地评估: **{'启用 ✅' if config.get("use_local_evaluation", False) else '禁用 ❌'}**")
     
     # 分割线
     st.divider()
@@ -815,3 +815,137 @@ def test_evaluator_model():
                     # 详细信息
                     with st.expander("查看完整JSON结果"):
                         st.json(result)
+                    
+                    # 保存评估结果到会话状态，用于测试用例生成
+                    st.session_state.last_evaluation_result = result
+                    st.session_state.last_test_response = test_response
+                    st.session_state.last_test_expected = test_expected
+                    st.session_state.last_test_criteria = test_criteria
+
+    # 分割线
+    st.divider()
+    
+    # 新增：测试用例自动生成功能
+    st.subheader("🔄 自动生成测试用例")
+    st.write("使用评估模型自动生成新的测试用例，适用于测试其他模型")
+    
+    # 检查是否已经有评估结果可用
+    has_evaluation = "last_evaluation_result" in st.session_state
+    
+    if not has_evaluation:
+        st.info("请先运行上方的评估测试，然后再使用此功能")
+    else:
+        # 显示最近的测试响应和期望输出
+        with st.expander("查看上次测试内容", expanded=False):
+            st.write("**测试响应:**")
+            st.write(st.session_state.last_test_response)
+            st.write("**期望输出:**")
+            st.write(st.session_state.last_test_expected)
+            st.write("**评估结果:**")
+            st.metric("总体评分", f"{st.session_state.last_evaluation_result.get('overall_score', 0)}分")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            test_model = st.text_input(
+                "目标测试模型",
+                value="gpt-4",
+                help="输入要为其生成测试用例的模型名称"
+            )
+        
+        with col2:
+            test_purpose = st.text_input(
+                "测试目的",
+                value="测试模型在理解和回答用户问题方面的能力",
+                help="测试的目的或关注点，例如：评估语法准确性、测试上下文理解、检验数学问题解决能力等"
+            )
+        
+        # 选择测试集
+        test_set_options = get_test_set_list()
+        selected_test_set = st.selectbox(
+            "选择目标测试集（将添加生成的测试用例）",
+            options=test_set_options,
+            help="选择要将生成的测试用例添加到哪个测试集中"
+        )
+        
+        if st.button("生成测试用例", type="primary"):
+            if not selected_test_set:
+                st.error("请选择一个测试集")
+                return
+                
+            provider = get_provider_from_model(current_evaluator)
+            api_key = get_api_key(provider)
+            
+            if not api_key:
+                st.error(f"评估模型 {current_evaluator} 的API密钥未设置，无法生成测试用例")
+                return
+                
+            with st.spinner("AI正在生成测试用例..."):
+                # 准备示例测试用例
+                example_case = {
+                    "id": f"test_{int(time.time())}",
+                    "description": "示例测试用例",
+                    "user_input": st.session_state.last_test_response,
+                    "expected_output": st.session_state.last_test_expected,
+                    "evaluation": st.session_state.last_evaluation_result
+                }
+                
+                # 创建评估器并执行测试用例生成
+                from utils.evaluator import PromptEvaluator
+                evaluator = PromptEvaluator()
+                result = evaluator.generate_test_cases(
+                    test_model,
+                    test_purpose,
+                    example_case
+                )
+                
+                if "error" in result:
+                    st.error(f"测试用例生成失败: {result['error']}")
+                    if "raw_response" in result:
+                        st.text_area("原始响应", value=result['raw_response'], height=200)
+                else:
+                    # 加载选择的测试集
+                    test_set = load_test_set(selected_test_set)
+                    
+                    # 添加生成的测试用例
+                    test_cases = result.get("test_cases", [])
+                    added_count = 0
+                    
+                    if test_cases:
+                        for tc in test_cases:
+                            # 生成唯一ID
+                            if "id" not in tc or not tc["id"]:
+                                tc["id"] = f"gen_{int(time.time())}_{added_count}"
+                            
+                            # 添加到测试集
+                            test_set["cases"].append(tc)
+                            added_count += 1
+                        
+                        # 保存更新的测试集
+                        save_test_set(selected_test_set, test_set)
+                        
+                        st.success(f"成功生成并添加 {added_count} 个测试用例到测试集 '{selected_test_set}'")
+                        
+                        # 显示生成的测试用例
+                        st.write("### 生成的测试用例")
+                        for i, tc in enumerate(test_cases):
+                            with st.expander(f"测试用例 {i+1}: {tc.get('description', '')}", expanded=i==0):
+                                st.write(f"**ID:** {tc.get('id', '')}")
+                                st.write(f"**描述:** {tc.get('description', '')}")
+                                
+                                st.write("**用户输入:**")
+                                st.code(tc.get("user_input", ""))
+                                
+                                st.write("**期望输出:**")
+                                st.code(tc.get("expected_output", ""))
+                                
+                                st.write("**评估标准:**")
+                                criteria = tc.get("evaluation_criteria", {})
+                                for criterion, description in criteria.items():
+                                    st.write(f"- **{criterion}:** {description}")
+                    else:
+                        st.warning("没有生成任何测试用例，请检查评估模型的响应")
+                        if "raw_response" in result:
+                            st.text_area("原始响应", value=result['raw_response'], height=200)
+                        else:
+                            st.json(result)
