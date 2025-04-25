@@ -94,25 +94,68 @@ def render_prompt_ab_test():
             if not test_set or not test_set.get("cases"):
                 st.error(f"无法加载测试集 '{test_set_name}' 或测试集为空")
                 return
-            with st.spinner("A/B测试运行中..."):
-                ab_test_results = run_test(
-                    [original_template, optimized_template],
-                    model,
-                    test_set,
-                    model_provider=model_provider,
-                    repeat_count=repeat_count,
-                    temperature=temperature
-                )
+            
+            # --- Progress Bar Setup ---
+            total_cases = len(test_set.get("cases", []))
+            total_attempts = 2 * total_cases * repeat_count # 2 templates
+            completed_attempts = 0
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            status_text.text(f"准备开始... 总共 {total_attempts} 次模型调用")
+
+            def update_progress():
+                nonlocal completed_attempts
+                completed_attempts += 1
+                progress = completed_attempts / total_attempts if total_attempts > 0 else 0
+                progress = min(progress, 1.0)
+                progress_bar.progress(progress)
+                status_text.text(f"运行中... 已完成 {completed_attempts}/{total_attempts} 次模型调用")
+            # --- End Progress Bar Setup ---
+
+            # Run tests sequentially, updating the same progress bar
+            status_text.text(f"正在测试原始提示词...")
+            original_test_results = run_test(
+                template=original_template,
+                model=model,
+                test_set=test_set,
+                model_provider=model_provider,
+                repeat_count=repeat_count,
+                temperature=temperature,
+                progress_callback=update_progress # Pass callback
+            )
+
+            status_text.text(f"正在测试优化提示词...")
+            optimized_test_results = run_test(
+                template=optimized_template,
+                model=model,
+                test_set=test_set,
+                model_provider=model_provider,
+                repeat_count=repeat_count,
+                temperature=temperature,
+                progress_callback=update_progress # Pass callback again
+            )
+
+            # Ensure progress bar completes and update status
+            progress_bar.progress(1.0)
+            status_text.text(f"✅ A/B 测试完成! 共执行 {completed_attempts}/{total_attempts} 次模型调用。")
+
+            # Check if results were obtained
+            if original_test_results and optimized_test_results:
                 st.session_state.ab_test_results = {
-                    "original": ab_test_results[0],
-                    "optimized": ab_test_results[1],
+                    "original": original_test_results,
+                    "optimized": optimized_test_results,
                     "params": {
                         "repeat_count": repeat_count,
                         "temperature": temperature
                     }
                 }
                 st.rerun()
-    
+            else:
+                st.error("A/B 测试未能成功获取所有结果，请检查配置和API密钥。")
+                # Optionally clear partial results if needed
+                if "ab_test_results" in st.session_state:
+                    del st.session_state.ab_test_results
+
     # 如果已有测试结果，显示结果
     if "ab_test_results" in st.session_state:
         display_ab_test_results(st.session_state.ab_test_results)

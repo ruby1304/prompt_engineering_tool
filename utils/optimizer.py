@@ -264,12 +264,37 @@ class PromptOptimizer:
         best_score = -float('inf')
         history = []
         for i in range(max_iterations):
-            eval_results = evaluator.run_evaluation(
-                prompt=current_prompt,
-                test_set=test_set,
-                model=model,
-                provider=provider
-            )
+            # 创建评估任务列表
+            evaluation_tasks = []
+            for test_case in test_set:
+                user_input = test_case.get("user_input", "")
+                expected_output = test_case.get("expected_output", "")
+                criteria = test_case.get("criteria", {})
+                # 准备模型调用
+                client = get_client(provider) if provider else None
+                if not client:
+                    continue
+                # 生成响应
+                try:
+                    response = client.generate_sync(
+                        current_prompt + "\n\n" + user_input,
+                        model,
+                        {"temperature": 0.7, "max_tokens": 2000}
+                    )
+                    model_response = response.get("text", "")
+                    # 创建评估任务
+                    evaluation_tasks.append({
+                        "model_response": model_response,
+                        "expected_output": expected_output,
+                        "criteria": criteria,
+                        "prompt": current_prompt
+                    })
+                except Exception as e:
+                    print(f"Error generating response: {e}")
+                    continue
+            
+            # 执行评估
+            eval_results = evaluator.run_evaluation(evaluation_tasks)
             avg_score = self._calc_avg_score(eval_results)
             history.append({
                 'iteration': i+1,
@@ -292,12 +317,36 @@ class PromptOptimizer:
             best_opt_score = avg_score
             for opt in optimized_prompts:
                 opt_prompt = opt.get('prompt', '')
-                opt_eval_results = evaluator.run_evaluation(
-                    prompt=opt_prompt,
-                    test_set=test_set,
-                    model=model,
-                    provider=provider
-                )
+                # 创建评估任务列表
+                opt_evaluation_tasks = []
+                for test_case in test_set:
+                    user_input = test_case.get("user_input", "")
+                    expected_output = test_case.get("expected_output", "")
+                    criteria = test_case.get("criteria", {})
+                    # 准备模型调用
+                    client = get_client(provider) if provider else None
+                    if not client:
+                        continue
+                    # 生成响应
+                    try:
+                        response = client.generate_sync(
+                            opt_prompt + "\n\n" + user_input,
+                            model,
+                            {"temperature": 0.7, "max_tokens": 2000}
+                        )
+                        model_response = response.get("text", "")
+                        # 创建评估任务
+                        opt_evaluation_tasks.append({
+                            "model_response": model_response,
+                            "expected_output": expected_output,
+                            "criteria": criteria,
+                            "prompt": opt_prompt
+                        })
+                    except Exception as e:
+                        print(f"Error generating response: {e}")
+                        continue
+                
+                opt_eval_results = evaluator.run_evaluation(opt_evaluation_tasks)
                 opt_avg_score = self._calc_avg_score(opt_eval_results)
                 history.append({
                     'iteration': i+1,

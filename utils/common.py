@@ -5,7 +5,7 @@ import json
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Callable
 import asyncio
 
 from models.token_counter import count_tokens
@@ -238,7 +238,7 @@ def render_prompt_template(template: dict, test_set: dict, case: dict) -> str:
         prompt_template = prompt_template.replace(f"{{{{{var_name}}}}}", var_value)
     return prompt_template
 
-def run_test(template, model, test_set, model_provider=None, repeat_count=1, temperature=0.7):
+def run_test(template, model, test_set, model_provider=None, repeat_count=1, temperature=0.7, progress_callback: Optional[Callable] = None):
     import asyncio
     from config import get_concurrency_limit
     from utils.evaluator import PromptEvaluator
@@ -253,8 +253,6 @@ def run_test(template, model, test_set, model_provider=None, repeat_count=1, tem
         },
         "test_cases": []
     }
-    progress_bar = st.progress(0)
-    status_text = st.empty()
     total_cases = len(test_set.get("cases", []))
 
     if model_provider:
@@ -331,19 +329,15 @@ def run_test(template, model, test_set, model_provider=None, repeat_count=1, tem
                         "_eval_input": None
                     }
                 case_results["responses"].append(response_data)
+                if progress_callback:
+                    progress_callback()
         return case_results
 
     async def run_all_cases():
         tasks = []
         for case_idx, case in enumerate(test_set.get("cases", [])):
             tasks.append(run_case(case_idx, case))
-        progress_bar = st.progress(0)
-        results_list = []
-        for i, coro in enumerate(asyncio.as_completed(tasks)):
-            result = await coro
-            results_list.append(result)
-            progress_bar.progress((i + 1) / total_cases)
-        progress_bar.progress(1.0)
+        results_list = await asyncio.gather(*tasks)
         return results_list
 
     loop = asyncio.new_event_loop()
@@ -374,7 +368,6 @@ def run_test(template, model, test_set, model_provider=None, repeat_count=1, tem
             del resp["_eval_input"] # Clean up temporary data
     results["test_cases"] = all_case_results
     loop.close()
-    status_text.text("✅ 测试完成!")
     return results
 
 def regenerate_expected_output(case: dict, template: dict, model: str, provider: str = None, temperature: float = 0.7):

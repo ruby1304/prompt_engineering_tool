@@ -183,54 +183,121 @@ def run_tests(templates, test_set, selected_models, temperature, max_tokens, rep
     st.subheader("测试运行中...")
     progress_bar = st.progress(0)
     status_text = st.empty()
-    result_area = st.empty()
-    total_tasks = len(templates) * len(selected_models)
-    completed_tasks = 0
+    result_area = st.empty() # Keep this for potential future detailed status
+    
+    # Calculate total attempts based on cases and repeats
+    total_cases = len(test_set.get("cases", []))
+    total_attempts = len(templates) * len(selected_models) * total_cases * repeat_count
+    completed_attempts = 0
+    
+    # Define the progress callback function
+    def update_progress():
+        nonlocal completed_attempts
+        completed_attempts += 1
+        progress = completed_attempts / total_attempts if total_attempts > 0 else 0
+        # Ensure progress doesn't exceed 1.0 due to potential floating point issues
+        progress = min(progress, 1.0)
+        progress_bar.progress(progress)
+        status_text.text(f"运行中... 已完成 {completed_attempts}/{total_attempts} 次模型调用")
+
     results = {}
+    all_test_results = [] # Store results from run_test calls
+
+    # --- Main Test Loop --- 
+    # Iterate through templates and models to call run_test
     for template in templates:
         template_name = template["name"]
-        results[template_name] = {
-            "template": template,
-            "test_set": test_set["name"],
-            "models": selected_models,
-            "params": {
-                "temperature": temperature,
-                "max_tokens": max_tokens
-            },
-            "test_cases": []
-        }
+        template_results_for_models = []
         for model in selected_models:
             provider = st.session_state.model_provider_map.get(model) if hasattr(st.session_state, 'model_provider_map') else None
-            # 调用 run_test 并发批量测试
+            
+            status_text.text(f"正在运行: 模板 '{template_name}' - 模型 '{model}'...")
+            
+            # Call run_test with the progress callback
             test_result = run_test(
                 template=template,
                 model=model,
                 test_set=test_set,
                 model_provider=provider,
                 repeat_count=repeat_count,
-                temperature=temperature
+                temperature=temperature,
+                progress_callback=update_progress # Pass the callback here
             )
-            # 合并结果
-            if test_result and "test_cases" in test_result:
-                # 按模型区分结果
-                for idx, case in enumerate(test_result["test_cases"]):
-                    case["model"] = model
-                    results[template_name]["test_cases"].append(case)
-            completed_tasks += 1
-            progress_bar.progress(completed_tasks / total_tasks)
-            result_area.text(f"已完成: {completed_tasks}/{total_tasks} 组 (模板×模型) 测试")
+            
+            if test_result:
+                template_results_for_models.append(test_result)
+            else:
+                st.warning(f"模板 '{template_name}' - 模型 '{model}' 测试运行失败或未返回结果。")
+        
+        # Store results grouped by template after processing all models for it
+        if template_results_for_models:
+             # Aggregate results for the current template from different models
+            aggregated_cases = []
+            for res in template_results_for_models:
+                for case in res.get("test_cases", []):
+                    # Add model info to each case if not already present (should be added by run_test)
+                    if "model" not in case:
+                         case["model"] = res.get("model")
+                    aggregated_cases.append(case)
+            
+            results[template_name] = {
+                "template": template,
+                "test_set": test_set["name"],
+                "models": selected_models, # List all models tested with this template
+                "params": {
+                    "temperature": temperature,
+                    "max_tokens": max_tokens # Assuming max_tokens was intended here, though not passed to run_test
+                },
+                "test_cases": aggregated_cases # Combined cases from all models for this template
+            }
+
+    # --- Post-Test Processing --- 
+    # Ensure progress bar reaches 100% and update status
     progress_bar.progress(1.0)
-    status_text.text("✅ 测试完成!")
+    status_text.text(f"✅ 测试完成! 共执行 {completed_attempts}/{total_attempts} 次模型调用。")
+    result_area.empty() # Clear the intermediate status area
+
+    # Save results
     result_name = f"test_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_result(result_name, results)
     st.success(f"测试结果已保存: {result_name}")
+
+    # Display results preview
     from ui.components import display_test_case_details
     st.subheader("测试结果预览")
+    # Check if results dictionary is empty
+    if not results:
+        st.warning("没有生成任何测试结果。请检查模型选择和测试配置。")
+        return
+        
     for template_name, template_result in results.items():
         st.markdown(f"#### 提示词模板: {template_name}")
-        for i, case in enumerate(template_result["test_cases"]):
-            st.markdown(f"测试用例 {i+1}: {case.get('case_description', case.get('case_id', '') )} (模型: {case.get('model')})")
-            display_test_case_details(case, show_system_prompt=True, inside_expander=False)
+        if not template_result.get("test_cases"):
+            st.warning(f"模板 '{template_name}' 没有有效的测试用例结果。")
+            continue
+            
+        # Display results grouped by case ID first, then show different model responses/evals
+        cases_grouped = {}
+        for case in template_result["test_cases"]:
+            case_id = case.get("case_id", "unknown_case")
+            if case_id not in cases_grouped:
+                cases_grouped[case_id] = {
+                    "description": case.get("case_description", case_id),
+                    "details": []
+                }
+            cases_grouped[case_id]["details"].append(case)
+            
+        case_counter = 1
+        for case_id, group_data in cases_grouped.items():
+            st.markdown(f"**测试用例 {case_counter}: {group_data['description']}**")
+            # Display details for each model run for this case
+            for case_detail in group_data["details"]:
+                 st.markdown(f"*模型: {case_detail.get('model', '未知')}*", help=f"Prompt used:\n```\n{case_detail.get('prompt', 'N/A')}\n```")
+                 display_test_case_details(case_detail, show_system_prompt=False, inside_expander=True) # Use expander for cleaner look
+            case_counter += 1
+            st.divider()
+
+    # Navigate to results viewer
     st.session_state.last_result = result_name
     st.session_state.page = "results_viewer"
     st.rerun()

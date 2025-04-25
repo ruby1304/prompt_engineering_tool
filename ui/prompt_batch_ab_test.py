@@ -98,42 +98,75 @@ def render_prompt_batch_ab_test():
                 st.error(f"无法加载测试集 '{test_set_name}' 或测试集为空")
                 return
             
-            with st.spinner("批量评估运行中..."):
-                # 创建进度条
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                # 计算总任务数 - 只有优化版本需要测试
-                total_templates = len(optimized_templates)
-                total_tasks = total_templates
-                completed_tasks = 0
-                
-                # 测试所有优化版本
+            # --- Progress Bar Setup ---
+            total_cases = len(test_set.get("cases", []))
+            total_templates_to_test = len(optimized_templates)
+            total_attempts = total_templates_to_test * total_cases * repeat_count
+            completed_attempts = 0
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            status_text.text(f"准备开始... 总共 {total_attempts} 次模型调用")
+
+            def update_progress(template_index):
+                nonlocal completed_attempts
+                completed_attempts += 1
+                progress = completed_attempts / total_attempts if total_attempts > 0 else 0
+                progress = min(progress, 1.0)
+                progress_bar.progress(progress)
+                status_text.text(f"运行中 (版本 {template_index+1}/{total_templates_to_test})... 已完成 {completed_attempts}/{total_attempts} 次模型调用")
+            # --- End Progress Bar Setup ---
+
+            with st.spinner("批量评估运行中..."): # Keep spinner for overall process
                 opt_results_list = []
+                all_tests_successful = True
                 for i, opt_template in enumerate(optimized_templates):
-                    status_text.text(f"测试优化版本 {i+1}...")
+                    status_text.text(f"开始测试优化版本 {i+1}/{total_templates_to_test}...")
+                    
+                    # Define a specific callback for this template index
+                    def specific_update_progress():
+                        update_progress(i)
+
                     opt_results = run_test(
-                        opt_template, 
-                        model, 
-                        test_set,
+                        template=opt_template, 
+                        model=model, 
+                        test_set=test_set,
                         model_provider=model_provider,
                         repeat_count=repeat_count,
-                        temperature=temperature
+                        temperature=temperature,
+                        progress_callback=specific_update_progress # Pass the specific callback
                     )
-                    opt_results_list.append({
-                        "template": opt_template,
-                        "results": opt_results
-                    })
-                    completed_tasks += 1
-                    progress_bar.progress(completed_tasks / total_tasks)
-                batch_results = {
-                    "original": {"template": original_template, "results": original_results},
-                    "optimized": opt_results_list
-                }
+                    
+                    if opt_results:
+                        opt_results_list.append({
+                            "template": opt_template,
+                            "results": opt_results
+                        })
+                    else:
+                        st.warning(f"优化版本 {i+1} 测试运行失败或未返回结果。")
+                        all_tests_successful = False # Mark if any test fails
+                        # Append a placeholder or skip?
+                        # For now, let's skip appending failed results to avoid errors later
+
+                # Final progress update and status
                 progress_bar.progress(1.0)
-                status_text.text("✅ 批量评估完成!")
-                st.session_state.batch_test_results = batch_results
-                st.rerun()
+                if all_tests_successful:
+                    status_text.text(f"✅ 批量评估完成! 共执行 {completed_attempts}/{total_attempts} 次模型调用。")
+                else:
+                     status_text.warning(f"⚠️ 批量评估部分完成。共执行 {completed_attempts}/{total_attempts} 次模型调用。请检查警告信息。")
+
+                # Store results only if at least some were successful
+                if opt_results_list:
+                    batch_results = {
+                        "original": {"template": original_template, "results": original_results},
+                        "optimized": opt_results_list
+                    }
+                    st.session_state.batch_test_results = batch_results
+                    st.rerun()
+                else:
+                    st.error("所有优化版本的测试均未成功获取结果。")
+                    # Clear potentially empty state if needed
+                    if "batch_test_results" in st.session_state:
+                        del st.session_state.batch_test_results
     
     # 如果已有测试结果，显示结果
     if "batch_test_results" in st.session_state:
