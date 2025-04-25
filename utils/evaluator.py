@@ -336,6 +336,34 @@ class PromptEvaluator:
         # 返回结果
         return {"test_cases": all_cases[:target_count] if target_count else all_cases}
 
+    def generate_user_inputs(self, test_set_desc: str, count: int = 5) -> Dict:
+        """使用LLM生成一批高质量用户输入，仅返回用户输入列表"""
+        if self.use_local_evaluation:
+            return {"error": "本地评估模式不支持AI生成用户输入，请配置评估模型API密钥"}
+        prompt = f"""你是一位专业的AI测试用例设计专家。请根据以下测试集描述，生成{count}个高质量的用户输入，覆盖不同场景和边界条件。只需返回用户输入本身，不要包含期望输出或其他内容。请以JSON数组格式返回，例如：\n[\n  "用户输入1",\n  "用户输入2",\n  ...\n]。\n\n测试集描述：{test_set_desc}\n"""
+        params = {"temperature": 0.7, "max_tokens": 1000}
+        try:
+            result = self.client.generate_sync(prompt, self.evaluator_model, params)
+            response_text = result.get("text", "")
+            # 清理可能的前后缀文本
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```", 1)[0].strip()
+            elif "```" in response_text:
+                response_text = response_text.split("```", 1)[1].split("```", 1)[0].strip()
+            # 解析JSON
+            try:
+                user_inputs = json.loads(response_text)
+                if isinstance(user_inputs, list):
+                    # 只保留非空字符串
+                    user_inputs = [x for x in user_inputs if isinstance(x, str) and x.strip()]
+                    return {"user_inputs": user_inputs[:count]}
+                else:
+                    return {"error": "AI返回内容格式不正确", "raw_response": response_text}
+            except Exception:
+                return {"error": "无法解析AI返回的用户输入JSON", "raw_response": response_text}
+        except Exception as e:
+            return {"error": f"生成用户输入时出错: {str(e)}"}
+
     def run_evaluation(self, prompt, test_set, model=None, provider=None):
         """批量评估测试用例，返回评估结果列表"""
         results = []

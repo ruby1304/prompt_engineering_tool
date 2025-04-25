@@ -367,6 +367,98 @@ def run_test(template, model, test_set, model_provider=None, repeat_count=1, tem
     
     return results
 
+def regenerate_expected_output(case: dict, template: dict, model: str, provider: str = None, temperature: float = 0.7):
+    """使用AI重新生成期望输出
+    
+    Args:
+        case (dict): 测试用例
+        template (dict): 提示词模板
+        model (str): 模型名称
+        provider (str, optional): 模型提供商. Defaults to None (将从模型名称推断).
+        temperature (float, optional): 温度参数. Defaults to 0.7.
+        
+    Returns:
+        dict: 包含生成结果或错误信息的字典
+    """
+    try:
+        # 如果未指定提供商，从模型名称推断
+        if not provider:
+            try:
+                provider = get_provider_from_model(model)
+            except ValueError:
+                # 尝试在所有提供商中查找模型
+                from config import get_available_models
+                found = False
+                available_models = get_available_models()
+                for p, models in available_models.items():
+                    if model in models:
+                        provider = p
+                        found = True
+                        break
+                
+                if not found:
+                    return {"error": f"无法确定模型 '{model}' 的提供商"}
+        
+        # 获取API客户端
+        client = get_client(provider)
+        
+        # 获取测试用例输入
+        user_input = case.get("user_input", "")
+        if not user_input:
+            return {"error": "测试用例没有用户输入"}
+            
+        # 渲染提示词模板
+        # 注意：这里我们只有case，没有test_set，所以我们只使用case中的变量
+        test_set = {"variables": {}}  # 创建一个空的测试集，只用于提供变量结构
+        prompt_template = render_prompt_template(template, test_set, case)
+        
+        # 参数设置
+        params = {"temperature": temperature, "max_tokens": 1000}
+        
+        # 同步调用模型API
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # 根据不同客户端类型构建不同的消息格式
+        try:
+            if provider in ["openai", "xai"]:
+                response = loop.run_until_complete(client.generate_with_messages(
+                    [
+                        {"role": "system", "content": prompt_template},
+                        {"role": "user", "content": user_input}
+                    ],
+                    model, 
+                    params
+                ))
+            else:
+                # 对于其他API客户端
+                combined_prompt = f"System: {prompt_template}\n\nUser: {user_input}"
+                response = loop.run_until_complete(client.generate(
+                    combined_prompt, 
+                    model, 
+                    params
+                ))
+                
+            loop.close()
+            
+            if "error" in response:
+                return {"error": response["error"]}
+            
+            # 返回生成的文本
+            return {
+                "text": response.get("text", ""),
+                "usage": response.get("usage", {})
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+        finally:
+            if loop and not loop.is_closed():
+                loop.close()
+    
+    except Exception as e:
+        return {"error": f"生成期望输出时发生错误: {str(e)}"}
+
 def display_template_info(template, show_token_count=True, inside_expander=False):
     """显示提示词模板信息"""
     st.info(f"**名称**: {template.get('name', '未命名')}")

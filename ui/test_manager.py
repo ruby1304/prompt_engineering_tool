@@ -16,6 +16,27 @@ def generate_unique_id(prefix="case"):
     unique_part = str(uuid.uuid4())[:8]  # 使用UUID的一部分，避免ID太长
     return f"{prefix}_{timestamp}_{unique_part}"
 
+def ensure_unique_id(case, existing_ids=None):
+    """确保测试用例有唯一ID，如果重复或不存在则生成新ID
+    
+    Args:
+        case (dict): 测试用例字典
+        existing_ids (set): 已存在的ID集合
+        
+    Returns:
+        str: 唯一的ID
+    """
+    if existing_ids is None:
+        existing_ids = set()
+        
+    # 如果ID不存在或在现有ID集合中，生成新ID
+    if not case.get("id") or case.get("id") in existing_ids:
+        new_id = generate_unique_id()
+        case["id"] = new_id
+    
+    # 返回唯一ID
+    return case["id"]
+
 def render_test_manager():
     st.title("📊 测试集管理")
     
@@ -143,8 +164,7 @@ def render_test_manager():
                             cases = st.session_state.current_test_set.get("cases", [])
                             ids_seen = set()
                             for i, case in enumerate(cases):
-                                if "id" not in case or not case["id"] or case["id"] in ids_seen:
-                                    case["id"] = generate_unique_id()
+                                ensure_unique_id(case, ids_seen)
                                 ids_seen.add(case["id"])
                         if "selected_case_index" in st.session_state:
                             del st.session_state.selected_case_index
@@ -173,13 +193,47 @@ def render_test_manager():
             if upload_file is not None:
                 try:
                     uploaded_test_set = json.load(upload_file)
+                    if "cases" in uploaded_test_set:
+                        ids_seen = set()
+                        for case in uploaded_test_set["cases"]:
+                            # 确保ID唯一
+                            ensure_unique_id(case, ids_seen)
+                            ids_seen.add(case["id"])
+                            
+                            # 确保基本字段存在
+                            if "description" not in case:
+                                case["description"] = "未命名测试用例"
+                                
+                            if "variables" not in case or not isinstance(case["variables"], dict):
+                                case["variables"] = {}
+                            
+                            if "user_input" not in case:
+                                case["user_input"] = ""
+                                
+                            if "expected_output" not in case:
+                                case["expected_output"] = ""
+                            
+                            # 确保评估标准字段存在
+                            if "evaluation_criteria" not in case or not isinstance(case["evaluation_criteria"], dict):
+                                case["evaluation_criteria"] = {
+                                    "accuracy": "评估准确性的标准",
+                                    "completeness": "评估完整性的标准",
+                                    "relevance": "评估相关性的标准",
+                                    "clarity": "评估清晰度的标准"
+                                }
+                                
+                    # 确保全局变量字段存在
+                    if "variables" not in uploaded_test_set or not isinstance(uploaded_test_set["variables"], dict):
+                        uploaded_test_set["variables"] = {}
+                        
+                    # 确保名称和描述字段存在
+                    if "name" not in uploaded_test_set or not uploaded_test_set["name"]:
+                        uploaded_test_set["name"] = f"导入测试集_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                        
+                    if "description" not in uploaded_test_set:
+                        uploaded_test_set["description"] = "导入的测试集"
+                        
                     if st.button("确认导入"):
-                        if "cases" in uploaded_test_set:
-                            ids_seen = set()
-                            for case in uploaded_test_set["cases"]:
-                                if "id" not in case or not case["id"] or case["id"] in ids_seen:
-                                    case["id"] = generate_unique_id()
-                                ids_seen.add(case["id"])
                         st.session_state.current_test_set = uploaded_test_set
                         if "selected_case_index" in st.session_state:
                             del st.session_state.selected_case_index
@@ -315,6 +369,187 @@ def render_test_manager():
                     st.success(f"已添加全局变量: {new_var_name}")
                     st.rerun()
         
+        # 批量操作功能区
+        with st.expander("🔄 批量操作", expanded=False):
+            st.caption("对测试集中的多个测试用例执行批量操作")
+            
+            st.subheader("批量生成优质输出")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                # 模型选择
+                config = load_config()
+                available_models = get_available_models()
+                all_model_options = []
+                
+                for provider, models in available_models.items():
+                    for model in models:
+                        all_model_options.append(f"{model} ({provider})")
+                
+                selected_model_str = st.selectbox(
+                    "选择模型",
+                    options=all_model_options,
+                    key="batch_expected_output_model"
+                )
+            
+            with col2:
+                # 模板选择
+                from config import get_template_list, load_template
+                template_list = get_template_list()
+                selected_template_name = st.selectbox(
+                    "选择提示词模板",
+                    options=template_list,
+                    key="batch_expected_output_template"
+                )
+            
+            with col3:
+                # 温度设置
+                temperature = st.slider("温度", 0.0, 1.0, 0.3, 0.1, key="batch_expected_output_temp")
+            
+            # 执行按钮
+            if st.button("✨ 批量生成测试用例的模型预期输出", type="primary", use_container_width=True):
+                # 确保选择了模型和模板
+                if not selected_model_str or not selected_template_name:
+                    st.error("请选择模型和提示词模板")
+                else:
+                    # 解析模型和提供商
+                    selected_model = selected_model_str.split(" (")[0]
+                    selected_provider = selected_model_str.split(" (")[1].rstrip(")")
+                    
+                    # 加载模板
+                    template = load_template(selected_template_name)
+                    
+                    # 检查测试集中有多少测试用例需要生成预期输出
+                    cases_to_fill = [case for case in test_set["cases"] if case.get("user_input") and not case.get("expected_output")]
+                    
+                    if not cases_to_fill:
+                        st.warning("没有找到需要生成预期输出的测试用例，所有测试用例已有预期输出或缺少用户输入")
+                    else:
+                        with st.spinner(f"正在为 {len(cases_to_fill)} 个测试用例生成预期输出..."):
+                            # 显示进度条
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            
+                            # 从provider_manager导入获取客户端的函数
+                            from models.api_clients import get_client
+                            import asyncio
+                            
+                            # 获取API客户端
+                            client = get_client(selected_provider)
+                            
+                            # 针对每个测试用例生成预期输出
+                            for i, case in enumerate(cases_to_fill):
+                                # 创建系统提示和用户输入
+                                from utils.common import render_prompt_template
+                                
+                                status_text.text(f"正在处理测试用例 {i+1}/{len(cases_to_fill)}: {case.get('description', 'Case '+str(i+1))}")
+                                
+                                # 渲染提示词模板
+                                prompt_template = render_prompt_template(template, test_set, case)
+                                user_input = case.get("user_input", "")
+                                
+                                try:
+                                    # 创建异步事件循环
+                                    loop = asyncio.new_event_loop()
+                                    asyncio.set_event_loop(loop)
+                                    
+                                    # 根据不同客户端类型构建不同的消息格式
+                                    if selected_provider in ["openai", "xai"]:
+                                        response = loop.run_until_complete(client.generate_with_messages(
+                                            [
+                                                {"role": "system", "content": prompt_template},
+                                                {"role": "user", "content": user_input}
+                                            ],
+                                            selected_model, 
+                                            {"temperature": temperature, "max_tokens": 1000}
+                                        ))
+                                    else:
+                                        # 对于其他API客户端
+                                        combined_prompt = f"System: {prompt_template}\n\nUser: {user_input}"
+                                        response = loop.run_until_complete(client.generate(
+                                            combined_prompt, 
+                                            selected_model, 
+                                            {"temperature": temperature, "max_tokens": 1000}
+                                        ))
+                                    
+                                    loop.close()
+                                    
+                                    # 获取模型响应
+                                    model_output = response.get("text", "")
+                                    
+                                    # 更新测试用例
+                                    if model_output:
+                                        # 更新实际测试集中的用例而不是局部副本
+                                        for test_case in test_set["cases"]:
+                                            if test_case.get("id") == case.get("id"):
+                                                test_case["expected_output"] = model_output
+                                                break
+                                    
+                                except Exception as e:
+                                    st.error(f"生成预期输出时出错: {str(e)}")
+                                
+                                # 更新进度条
+                                progress_bar.progress((i + 1) / len(cases_to_fill))
+                            
+                            # 完成信息
+                            status_text.text("✅ 批量生成预期输出完成!")
+                            
+                            # 自动保存测试集
+                            save_test_set(test_set["name"], test_set)
+                            st.success(f"成功为 {len(cases_to_fill)} 个测试用例生成预期输出")
+                            st.rerun()
+
+            st.divider()
+            
+            st.subheader("批量填充评估标准")
+            if st.button("✨ 批量生成测试用例的评估标准", type="primary", use_container_width=True):
+                # 找出有描述、用户输入和预期输出但没有评估标准的测试用例
+                cases_to_fill = [case for case in test_set["cases"] 
+                                if case.get("description") and case.get("user_input") and case.get("expected_output") 
+                                and (not case.get("evaluation_criteria") or len(case.get("evaluation_criteria", {})) == 0)]
+                
+                if not cases_to_fill:
+                    st.warning("没有找到需要生成评估标准的测试用例，所有测试用例已有评估标准或缺少必要信息")
+                else:
+                    with st.spinner(f"正在为 {len(cases_to_fill)} 个测试用例生成评估标准..."):
+                        # 显示进度条
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        # 针对每个测试用例生成评估标准
+                        for i, case in enumerate(cases_to_fill):
+                            status_text.text(f"正在处理测试用例 {i+1}/{len(cases_to_fill)}: {case.get('description', 'Case '+str(i+1))}")
+                            
+                            try:
+                                # 调用评估标准生成函数
+                                result = generate_evaluation_criteria(
+                                    case.get("description", ""),
+                                    case.get("user_input", ""),
+                                    case.get("expected_output", "")
+                                )
+                                
+                                if "error" in result:
+                                    st.error(f"为测试用例 '{case.get('description', 'Case '+str(i+1))}' 生成评估标准失败: {result['error']}")
+                                else:
+                                    # 更新实际测试集中的用例而不是局部副本
+                                    for test_case in test_set["cases"]:
+                                        if test_case.get("id") == case.get("id"):
+                                            test_case["evaluation_criteria"] = result["criteria"]
+                                            break
+                            except Exception as e:
+                                st.error(f"生成评估标准时出错: {str(e)}")
+                            
+                            # 更新进度条
+                            progress_bar.progress((i + 1) / len(cases_to_fill))
+                        
+                        # 完成信息
+                        status_text.text("✅ 批量生成评估标准完成!")
+                        
+                        # 自动保存测试集
+                        save_test_set(test_set["name"], test_set)
+                        st.success(f"成功为 {len(cases_to_fill)} 个测试用例生成评估标准")
+                        st.rerun()
+        
         # ===================== 重构的测试用例管理 =====================
         st.subheader("📋 测试用例管理")
         
@@ -327,8 +562,8 @@ def render_test_manager():
         
         # 左侧：测试用例列表区域 - 添加固定高度和独立滚动区
         with list_col:
-            # 新布局：测试用例添加按钮并排放置
-            col1, col2 = st.columns(2)
+            # 新布局：测试用例添加、生成按钮并排放置
+            col1, col2, col3 = st.columns(3) # Changed from 2 columns to 3
             with col1:
                 if st.button("➕ 添加测试用例", use_container_width=True):
                     new_case = {
@@ -350,8 +585,8 @@ def render_test_manager():
                     st.success("已添加新测试用例")
                     st.rerun()
             
-            with col2:
-                gen_count = st.number_input("生成数量", min_value=1, max_value=1000, value=3, step=1, key="ai_gen_case_count") # Changed max_value to 1000
+            with col2: # Logic for generating full test cases moved here
+                gen_count = st.number_input("生成数量", min_value=1, max_value=1000, value=3, step=1, key="ai_gen_case_count") 
                 if st.button("✨ AI生成测试用例", use_container_width=True):
                     with st.spinner("AI正在生成测试用例..."):
                         test_set = st.session_state.current_test_set
@@ -369,7 +604,7 @@ def render_test_manager():
                         # 修复正则表达式，去除乱码字符，改为非贪婪匹配
                         import re
                         base_purpose = test_set_desc or test_set_name
-                        base_purpose = re.sub(r"请生成\d+个.*?测试用例.*?", "", base_purpose)
+                        base_purpose = re.sub(r"请生成\\d+个.*?测试用例.*?", "", base_purpose)
                         test_purpose = f"{base_purpose}。请生成{gen_count}个高质量测试用例，覆盖不同场景和边界。"
                         try:
                             evaluator = PromptEvaluator()
@@ -386,9 +621,30 @@ def render_test_manager():
                             else:
                                 test_cases = result.get("test_cases", [])
                                 added_count = 0
+                                
+                                # 确保所有生成的测试用例有唯一ID
+                                ids_seen = set(case.get("id", "") for case in test_set["cases"])
+                                
                                 for tc in test_cases:
-                                    if "id" not in tc or not tc["id"]:
-                                        tc["id"] = generate_unique_id()
+                                    # 生成唯一ID
+                                    ensure_unique_id(tc, ids_seen)
+                                    ids_seen.add(tc["id"])
+                                    
+                                    # 确保所有字段都有合理默认值
+                                    if "description" not in tc or not tc["description"]:
+                                        tc["description"] = f"AI生成测试用例 {added_count + 1}"
+                                    
+                                    if "variables" not in tc:
+                                        tc["variables"] = {}
+                                        
+                                    if "evaluation_criteria" not in tc:
+                                        tc["evaluation_criteria"] = {
+                                            "accuracy": "评估准确性的标准",
+                                            "completeness": "评估完整性的标准",
+                                            "relevance": "评估相关性的标准",
+                                            "clarity": "评估清晰度的标准"
+                                        }
+                                    
                                     test_set["cases"].append(tc)
                                     added_count += 1
                                 save_test_set(test_set["name"], test_set)
@@ -396,7 +652,63 @@ def render_test_manager():
                                 st.rerun()
                         except Exception as e:
                             st.error(f"生成测试用例时发生异常: {e}")
-            
+
+            with col3: # New column for generating user inputs only
+                gen_inputs_count = st.number_input("生成输入数量", min_value=1, max_value=1000, value=5, step=1, key="ai_gen_inputs_count")
+                if st.button("💡 AI生成用户输入", use_container_width=True):
+                    with st.spinner("AI正在生成用户输入..."):
+                        test_set = st.session_state.current_test_set
+                        test_set_desc = test_set.get("description", "通用测试") or "通用测试" # Use description or default
+
+                        try:
+                            evaluator = PromptEvaluator()
+                            result = evaluator.generate_user_inputs(
+                                test_set_desc, 
+                                gen_inputs_count
+                            )
+
+                            if "error" in result:
+                                st.error(f"生成用户输入失败: {result['error']}")
+                            else:
+                                user_inputs = result.get("user_inputs", [])
+                                added_count = 0
+                                
+                                # 获取已有ID集合以确保唯一性
+                                ids_seen = set(case.get("id", "") for case in test_set["cases"])
+                                
+                                for user_input in user_inputs:
+                                    if user_input: # Ensure input is not empty
+                                        new_case = {
+                                            "id": generate_unique_id(),
+                                            "description": f"AI生成输入 {added_count + 1}",
+                                            "variables": {},
+                                            "user_input": user_input,
+                                            "expected_output": "", # Keep expected output empty
+                                            "evaluation_criteria": { # Default criteria
+                                                "accuracy": "评估准确性的标准",
+                                                "completeness": "评估完整性的标准",
+                                                "relevance": "评估相关性的标准",
+                                                "clarity": "评估清晰度的标准"
+                                            }
+                                        }
+                                        
+                                        # 确保ID唯一
+                                        ensure_unique_id(new_case, ids_seen)
+                                        ids_seen.add(new_case["id"])
+                                        
+                                        test_set["cases"].append(new_case)
+                                        added_count += 1
+                                
+                                if added_count > 0:
+                                    save_test_set(test_set["name"], test_set)
+                                    st.success(f"成功生成并添加 {added_count} 个仅包含用户输入的测试用例到 '{test_set['name']}'")
+                                    st.rerun()
+                                else:
+                                    st.warning("AI未能生成有效的用户输入。")
+
+                        except Exception as e:
+                            st.error(f"生成用户输入时发生异常: {e}")
+
             # 关键词搜索框
             search_query = st.text_input("🔍 搜索测试用例", placeholder="输入关键词搜索")
             
@@ -535,11 +847,43 @@ def render_test_manager():
                     if st.button("🗑️ 删除", key="delete_case_btn", use_container_width=True):
                         # 直接删除此用例
                         test_set["cases"].pop(case_index)
+                        
+                        # 清理会话状态
                         if "current_case" in st.session_state:
                             del st.session_state.current_case
                         if "current_case_index" in st.session_state:
                             del st.session_state.current_case_index
-                        st.success("测试用例已删除")
+                            
+                        # 重新应用过滤和排序
+                        filtered_cases = test_set["cases"]
+                        if search_query:
+                            filtered_cases = [
+                                case for case in filtered_cases if (
+                                    search_query.lower() in case.get("id", "").lower() or
+                                    search_query.lower() in case.get("description", "").lower() or
+                                    search_query.lower() in case.get("user_input", "").lower() or
+                                    search_query.lower() in case.get("expected_output", "").lower()
+                                )
+                            ]
+                        
+                        # 应用排序
+                        if sort_by in sort_options:
+                            filtered_cases = sort_options[sort_by](filtered_cases)
+                        
+                        # 更新总页数
+                        total_pages = max(1, (len(filtered_cases) + page_size - 1) // page_size)
+                        
+                        # 更新页码，如果当前页为空则回到上一页
+                        if st.session_state.page_number >= total_pages:
+                            st.session_state.page_number = max(0, total_pages - 1)
+                            
+                        # 自动保存测试集，确保删除操作被持久化
+                        try:
+                            save_test_set(test_set["name"], test_set)
+                            st.success("测试用例已删除并保存")
+                        except Exception as e:
+                            st.error(f"删除测试用例后保存失败: {str(e)}")
+                            
                         st.rerun()
                 
                 # 使用选项卡来组织详情区域
@@ -549,6 +893,115 @@ def render_test_manager():
                     # 用通用组件展示用例详情、响应和评估结果
                     from ui.components import display_test_case_details
                     display_test_case_details(case, show_system_prompt=True, inside_expander=True)
+                    
+                    # 添加AI重新生成期望输出功能
+                    st.divider()
+                    st.subheader("🤖 使用AI重新生成期望输出")
+                    st.caption("使用指定模型和提示词模版重新生成期望输出")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        # 模型选择
+                        config = load_config()
+                        available_models = get_available_models()
+                        all_model_options = []
+                        
+                        for provider, models in available_models.items():
+                            for model in models:
+                                all_model_options.append(f"{model} ({provider})")
+                        
+                        # 默认选择gpt-4或第一个模型
+                        default_idx = 0
+                        for i, model_str in enumerate(all_model_options):
+                            if model_str.startswith("gpt-4"):
+                                default_idx = i
+                                break
+                        
+                        selected_model_str = st.selectbox(
+                            "选择模型",
+                            options=all_model_options,
+                            index=default_idx,
+                            key=f"regen_model_{case_index}"
+                        )
+                    
+                    with col2:
+                        # 模板选择
+                        from config import get_template_list, load_template
+                        template_list = get_template_list()
+                        selected_template_name = st.selectbox(
+                            "选择提示词模板",
+                            options=template_list,
+                            key=f"regen_template_{case_index}"
+                        )
+                    
+                    with col3:
+                        # 温度设置
+                        temperature = st.slider(
+                            "温度", 
+                            0.0, 1.0, 0.7, 0.1, 
+                            key=f"regen_temp_{case_index}",
+                            help="较高的值会使输出更加随机，较低的值会使输出更加确定"
+                        )
+                    
+                    # 执行按钮
+                    if st.button("✨ 使用AI重新生成期望输出", type="primary", key=f"regen_btn_{case_index}"):
+                        if not selected_model_str or not selected_template_name:
+                            st.error("请选择模型和提示词模板")
+                        elif not case.get("user_input"):
+                            st.error("测试用例必须有用户输入才能生成期望输出")
+                        else:
+                            # 解析模型和提供商
+                            selected_model = selected_model_str.split(" (")[0]
+                            selected_provider = selected_model_str.split(" (")[1].rstrip(")")
+                            
+                            # 加载模板
+                            template = load_template(selected_template_name)
+                            
+                            with st.spinner("AI正在生成期望输出..."):
+                                # 调用重新生成函数
+                                from utils.common import regenerate_expected_output
+                                result = regenerate_expected_output(
+                                    case=case,
+                                    template=template,
+                                    model=selected_model,
+                                    provider=selected_provider,
+                                    temperature=temperature
+                                )
+                                
+                                if "error" in result:
+                                    st.error(f"生成期望输出失败: {result['error']}")
+                                else:
+                                    generated_text = result.get("text", "")
+                                    
+                                    if generated_text:
+                                        # 显示生成的输出并提供确认选项
+                                        st.success("✅ 成功生成期望输出")
+                                        
+                                        # 计算token使用量
+                                        usage = result.get("usage", {})
+                                        if usage:
+                                            st.caption(f"Token使用: 输入 {usage.get('prompt_tokens', 0)}, 输出 {usage.get('completion_tokens', 0)}, 总计 {usage.get('total_tokens', 0)}")
+                                        
+                                        st.write("**新生成的期望输出:**")
+                                        st.text_area("", value=generated_text, height=200, key=f"new_output_{case_index}", disabled=True)
+                                        
+                                        if st.button("✅ 确认使用此输出", key=f"confirm_new_output_{case_index}"):
+                                            # 将生成的输出设置为测试用例的期望输出
+                                            for test_case in test_set["cases"]:
+                                                if test_case.get("id") == case.get("id"):
+                                                    test_case["expected_output"] = generated_text
+                                                    break
+                                            
+                                            # 更新会话状态和UI显示
+                                            st.session_state.current_case["expected_output"] = generated_text
+                                            
+                                            # 自动保存测试集
+                                            save_test_set(test_set["name"], test_set)
+                                            st.success("✅ 已更新期望输出并保存")
+                                            st.rerun()
+                                    else:
+                                        st.warning("AI返回了空的输出，请调整温度参数或尝试其他模型/模板")
                 
                 with tab2:
                     # 变量编辑区
@@ -615,19 +1068,27 @@ def render_test_manager():
                     if st.button("✨ AI生成评估标准", type="primary", use_container_width=True):
                         with st.spinner("AI正在生成评估标准..."):
                             # 调用AI生成评估标准的函数
-                            result = generate_evaluation_criteria(
-                                case["description"], 
-                                case["user_input"], 
-                                case["expected_output"]
-                            )
-                            
-                            if "error" in result:
-                                st.error(f"生成评估标准失败: {result['error']}")
+                            # Ensure case has description, user_input, expected_output before calling
+                            case_desc = case.get("description", "")
+                            user_input = case.get("user_input", "")
+                            expected_output = case.get("expected_output", "")
+
+                            if not case_desc or not user_input or not expected_output:
+                                st.warning("请先填写测试用例的描述、用户输入和期望输出，才能生成评估标准。")
                             else:
-                                # 更新测试用例的评估标准
-                                case["evaluation_criteria"] = result["criteria"]
-                                st.success("✅ 评估标准已自动生成")
-                                st.rerun()
+                                result = generate_evaluation_criteria(
+                                    case_desc, 
+                                    user_input, 
+                                    expected_output
+                                )
+                                
+                                if "error" in result:
+                                    st.error(f"生成评估标准失败: {result['error']}")
+                                else:
+                                    # 更新测试用例的评估标准
+                                    case["evaluation_criteria"] = result["criteria"]
+                                    st.success("✅ 评估标准已自动生成")
+                                    st.rerun()
                     
                     # 显示现有评估标准
                     criteria_to_remove = []
@@ -676,27 +1137,45 @@ def render_test_manager():
                     case_index = st.session_state.current_case_index
                     test_set = st.session_state.current_test_set
 
-                    # Validate index
+                    # 验证索引有效性
                     if 0 <= case_index < len(test_set["cases"]):
-                        # Get a direct reference to the case dictionary in the list
+                        # 检查ID是否唯一
+                        current_id = test_set["cases"][case_index].get("id", "")
+                        ids_seen = set()
+                        for i, other_case in enumerate(test_set["cases"]):
+                            if i != case_index:  # 除了当前用例
+                                ids_seen.add(other_case.get("id", ""))
+                        
+                        # 如果ID为空或冲突，生成新ID
+                        if not new_id or new_id in ids_seen:
+                            new_id = generate_unique_id()
+                            st.warning(f"检测到ID冲突或为空，已自动生成新ID: {new_id}")
+                        
+                        # 获取直接引用以更新用例
                         case_to_update = test_set["cases"][case_index]
 
-                        # Update the dictionary directly using values from the input widgets
+                        # 使用输入小部件的值更新字典
                         case_to_update["id"] = new_id
-                        case_to_update["description"] = new_desc
+                        case_to_update["description"] = new_desc or "未命名测试用例"
                         case_to_update["user_input"] = new_user_input
                         case_to_update["expected_output"] = new_expected_output
-                        # Variables and criteria are modified via widgets bound to st.session_state.current_case
-                        # Ensure these changes are saved by updating from the potentially modified session state case
+                        
+                        # 从会话状态中可能修改的当前用例更新变量和评估标准
                         current_edited_case = st.session_state.current_case
                         case_to_update["variables"] = current_edited_case.get("variables", {})
                         case_to_update["evaluation_criteria"] = current_edited_case.get("evaluation_criteria", {})
 
-                        # Update the session state's current_case to reflect the saved state
+                        # 更新会话状态的current_case以反映保存的状态
                         st.session_state.current_case = case_to_update
-
-                        st.success("测试用例已保存")
-                        # Rerun to refresh the UI, especially the list view
+                        
+                        # 自动保存测试集
+                        try:
+                            save_test_set(test_set["name"], test_set)
+                            st.success("测试用例已保存")
+                        except Exception as e:
+                            st.error(f"保存测试用例失败: {str(e)}")
+                        
+                        # 重新运行以刷新UI
                         st.rerun()
                     else:
                         st.error(f"保存失败：无效的测试用例索引 {case_index}")
