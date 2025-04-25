@@ -477,8 +477,10 @@ def load_result(name: str) -> Dict:
         return json.load(f)
 
 def get_result_list() -> List[str]:
-    """获取所有测试结果列表"""
-    return [f.name.replace(".json", "") for f in RESULTS_DIR.glob("*.json")]
+    """获取所有测试结果列表，按修改时间从新到旧排序"""
+    files = list(RESULTS_DIR.glob("*.json"))
+    files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    return [f.name.replace(".json", "") for f in files]
 
 def get_test_set_list() -> List[str]:
     """获取所有测试集列表，按修改时间从新到旧排序"""

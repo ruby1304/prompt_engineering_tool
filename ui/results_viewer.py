@@ -124,8 +124,14 @@ def render_results_viewer():
             # 准备评估结果列表
             evaluation_results = []
             for case in prompt_data.get("test_cases", []):
-                if "evaluation" in case and not "error" in case["evaluation"]:
-                    evaluation_results.append(case["evaluation"])
+                # 从 responses[0] 获取 evaluation
+                response_list = case.get("responses", [])
+                if not response_list:
+                    continue
+                evaluation = response_list[0].get("evaluation") # Get evaluation from the first response
+
+                if evaluation and not evaluation.get("error"):
+                    evaluation_results.append(evaluation)
             
             with st.spinner("正在生成优化建议..."):
                 # 调用优化器
@@ -229,11 +235,17 @@ def calculate_average_score(prompt_data):
     """计算提示词平均分"""
     total_score = 0
     count = 0
-    
+
     for case in prompt_data.get("test_cases", []):
+        # 从 responses[0] 获取 evaluation
+        response_list = case.get("responses", [])
+        if not response_list:
+            continue
+        evaluation = response_list[0].get("evaluation") # Get evaluation from the first response
+
         # 检查evaluation是否存在且不为None
-        if case.get("evaluation") is not None and "overall_score" in case["evaluation"]:
-            total_score += case["evaluation"]["overall_score"]
+        if evaluation is not None and "overall_score" in evaluation:
+            total_score += evaluation["overall_score"]
             count += 1
-    
+
     return total_score / count if count > 0 else 0
