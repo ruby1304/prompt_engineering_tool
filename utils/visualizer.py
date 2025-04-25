@@ -15,7 +15,9 @@ def create_score_comparison_chart(results: Dict[str, Dict]) -> go.Figure:
     
     for prompt_name, prompt_results in results.items():
         for test_case in prompt_results.get("test_cases", []):
-            for score_name, score_value in test_case.get("evaluation", {}).get("scores", {}).items():
+            evaluation = test_case.get("evaluation") or {}
+            score_dict = evaluation.get("scores") or {}
+            for score_name, score_value in score_dict.items():
                 prompts.append(prompt_name)
                 scores.append(score_value)
                 categories.append(score_name)
