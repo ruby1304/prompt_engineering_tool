@@ -54,9 +54,11 @@ DEFAULT_CONFIG = {
     "use_local_evaluation": False,
     "system_templates": {  # 新增：系统提示词模板类型
         "evaluator": "evaluator_template",
-        "optimizer": "optimizer_template",
+        "optimizer": "optimizer",  # 修正：确保与 optimizer.json 文件名匹配
         "criteria_generator": "criteria_generator_template",
-        "testcase_generator": "testcase_generator_template"
+        "testcase_generator": "testcase_generator_template",
+        "zero_shot_optimizer": "zero_shot_optimizer",  # 修正：确保与 zero_shot_optimizer.json 文件名匹配
+        "problem_analyzer": "problem_analyzer"  # 新增：问题分析器模板
     }
 }
 
@@ -293,6 +295,18 @@ DEFAULT_SYSTEM_TEMPLATES = {
             "task_description": {"description": "任务描述", "default": "请对用户输入进行情感分析"},
             "task_goal": {"description": "任务目标", "default": "输出情感类别和置信度分数"},
             "constraints": {"description": "约束条件", "default": "输出需简洁明了，禁止输出与情感无关内容"}
+        },
+        "is_system": True
+    },
+    "problem_analyzer": {
+        "name": "problem_analyzer",
+        "description": "System prompt for analyzing a batch of evaluation results to identify key performance problems.",
+        "template": """You are an expert AI performance analyst. Your task is to analyze a collection of evaluation results for a specific prompt and identify the most significant and recurring problems or weaknesses in the AI's responses. Focus on synthesizing the findings into actionable insights.\n\n**Evaluation Results:**\n```\n{{evaluation_results_summary}}\n```\n\n**Instructions:**\n1.  Carefully review all provided evaluation results, paying attention to both quantitative scores (especially low scores across different dimensions like accuracy, completeness, clarity, relevance) and qualitative analysis text.\n2.  Identify recurring patterns of failure or underperformance. Look for common themes mentioned in the analysis sections.\n3.  Synthesize these findings into a concise summary of the **top 3-5 most critical problems**.\n4.  For each identified problem, briefly explain its nature and potential impact.\n5.  Prioritize problems that appear frequently or have a significant negative impact on the overall quality of the responses.\n6.  Phrase the output as a clear, actionable summary that can guide prompt optimization efforts.\n7.  Output the analysis as a single block of text. Do not use JSON or any other structured format unless specifically requested in the future. Start the analysis directly, without introductory phrases like \"Here is the analysis...\".\n\n**Example Output Format:**\nBased on the evaluations, the primary issues are:\n1.  **Lack of Specificity:** Responses often provide general information instead of addressing the specific details requested in the prompt (affects accuracy and relevance).\n2.  **Inconsistent Formatting:** The output format varies significantly across responses, failing to adhere to the requested structure (affects clarity and usability).\n3.  **Missing Key Information:** Several responses omit crucial details expected in the answer (affects completeness).\n4.  **Overly Verbose:** Some answers are unnecessarily long and include irrelevant information (affects conciseness and clarity).\n\nFocus on identifying the *root causes* of poor performance based *only* on the provided evaluation data.""",
+        "variables": {
+            "evaluation_results_summary": {
+                "description": "Summary of evaluation results for multiple test cases",
+                "default": "Case 1: Score 60, Analysis: Response was too vague.\nCase 2: Score 55, Analysis: Missed key point B, formatting incorrect.\nCase 3: Score 70, Analysis: Generally good but slightly inaccurate on detail C."
+            }
         },
         "is_system": True
     }

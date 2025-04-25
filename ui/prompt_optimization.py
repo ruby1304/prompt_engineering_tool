@@ -193,7 +193,7 @@ def render_prompt_optimization():
             st.subheader("详细测试结果")
             
             for i, case in enumerate(test_results.get("test_cases", [])):
-                with st.expander(f"测试用例 {i+1}: {case.get('case_description', case.get('case_id', ''))}"):
+                with st.expander(f"测试用例 {i+1}: {case.get("case_description", case.get("case_id", ""))}"):
                     display_test_case_details(case, inside_expander=True)
             
             # 添加清除结果按钮
@@ -317,7 +317,7 @@ def render_iterative_optimization():
         # AI自动生成新测试集
         test_set_name = st.text_input("新测试集名称", value=f"AI生成测试集_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
         test_set_desc = st.text_input("新测试集描述", value="自动生成的测试集")
-        gen_case_count = st.number_input("生成测试用例数量", min_value=3, max_value=20, value=6, step=1)
+        gen_case_count = st.number_input("生成测试用例数量", min_value=3, max_value=1000, value=6, step=1) # Changed max_value to 1000
         st.info("将根据当前提示词模板和模型，自动生成高质量测试用例")
 
     # 迭代次数

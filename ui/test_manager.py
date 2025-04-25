@@ -345,14 +345,13 @@ def render_test_manager():
                         }
                     }
                     test_set["cases"].append(new_case)
-                    # 设置新添加的用例为当前编辑的用例
                     st.session_state.current_case = new_case
                     st.session_state.current_case_index = len(test_set["cases"]) - 1
                     st.success("已添加新测试用例")
                     st.rerun()
             
             with col2:
-                gen_count = st.number_input("生成数量", min_value=1, max_value=20, value=3, step=1, key="ai_gen_case_count")
+                gen_count = st.number_input("生成数量", min_value=1, max_value=1000, value=3, step=1, key="ai_gen_case_count") # Changed max_value to 1000
                 if st.button("✨ AI生成测试用例", use_container_width=True):
                     with st.spinner("AI正在生成测试用例..."):
                         test_set = st.session_state.current_test_set
@@ -524,11 +523,12 @@ def render_test_manager():
                 # 基本信息编辑区
                 col1, col2 = st.columns([3, 1])
                 with col1:
-                    new_id = st.text_input("用例ID", value=case.get("id", ""))
-                    new_desc = st.text_input("描述", value=case.get("description", ""))
-                    new_user_input = st.text_area("用户输入", value=case.get("user_input", ""), height=80)
-                    new_expected_output = st.text_area("期望输出", value=case.get("expected_output", ""), height=80)
-                
+                    # IMPORTANT: Assign keys to ensure widgets update correctly
+                    new_id = st.text_input("用例ID", value=case.get("id", ""), key=f"edit_id_{case_index}")
+                    new_desc = st.text_input("描述", value=case.get("description", ""), key=f"edit_desc_{case_index}")
+                    new_user_input = st.text_area("用户输入", value=case.get("user_input", ""), height=80, key=f"edit_input_{case_index}")
+                    new_expected_output = st.text_area("期望输出", value=case.get("expected_output", ""), height=80, key=f"edit_output_{case_index}")
+
                 with col2:
                     st.write("")
                     st.write("")
@@ -671,16 +671,36 @@ def render_test_manager():
                 
                 # 底部保存区域
                 st.divider()
-                if st.button("💾 保存更改", use_container_width=True, type="primary"):
-                    # 更新基本信息
-                    case["id"] = new_id
-                    case["description"] = new_desc
-                    case["user_input"] = new_user_input
-                    case["expected_output"] = new_expected_output
-                    
-                    # 更新测试集中的用例
-                    test_set["cases"][case_index] = case
-                    st.success("测试用例已保存")
+                if st.button("💾 保存更改", use_container_width=True, type="primary", key=f"save_changes_{case_index}"):
+                    # Get the index and the test_set from session state
+                    case_index = st.session_state.current_case_index
+                    test_set = st.session_state.current_test_set
+
+                    # Validate index
+                    if 0 <= case_index < len(test_set["cases"]):
+                        # Get a direct reference to the case dictionary in the list
+                        case_to_update = test_set["cases"][case_index]
+
+                        # Update the dictionary directly using values from the input widgets
+                        case_to_update["id"] = new_id
+                        case_to_update["description"] = new_desc
+                        case_to_update["user_input"] = new_user_input
+                        case_to_update["expected_output"] = new_expected_output
+                        # Variables and criteria are modified via widgets bound to st.session_state.current_case
+                        # Ensure these changes are saved by updating from the potentially modified session state case
+                        current_edited_case = st.session_state.current_case
+                        case_to_update["variables"] = current_edited_case.get("variables", {})
+                        case_to_update["evaluation_criteria"] = current_edited_case.get("evaluation_criteria", {})
+
+                        # Update the session state's current_case to reflect the saved state
+                        st.session_state.current_case = case_to_update
+
+                        st.success("测试用例已保存")
+                        # Rerun to refresh the UI, especially the list view
+                        st.rerun()
+                    else:
+                        st.error(f"保存失败：无效的测试用例索引 {case_index}")
+
             else:
                 # 显示提示
                 st.info("👈 请从左侧列表选择一个测试用例进行查看和编辑")
