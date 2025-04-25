@@ -364,15 +364,49 @@ class PromptEvaluator:
         except Exception as e:
             return {"error": f"生成用户输入时出错: {str(e)}"}
 
-    def run_evaluation(self, prompt, test_set, model=None, provider=None):
-        """批量评估测试用例，返回评估结果列表"""
-        results = []
-        for case in test_set:
-            user_input = case.get("user_input", "")
-            expected_output = case.get("expected_output", "")
-            criteria = case.get("evaluation_criteria", {})
-            eval_result = self.evaluate_response_sync(
-                user_input, expected_output, criteria, prompt
-            )
-            results.append(eval_result)
-        return results
+    async def run_evaluation_async(self, evaluation_tasks: List[Dict]) -> List[Dict]:
+        """批量并发评估测试用例，返回评估结果列表"""
+        import asyncio
+        from config import get_concurrency_limit
+        concurrency_limit = get_concurrency_limit(self.provider, self.evaluator_model)
+        semaphore = asyncio.Semaphore(concurrency_limit)
+        
+        async def eval_one(task: Dict):
+            # 从任务字典中提取所需参数
+            model_response = task.get("model_response", "")
+            expected_output = task.get("expected_output", "")
+            criteria = task.get("criteria", {})
+            prompt = task.get("prompt", "") # 获取提示词
+            
+            async with semaphore:
+                # 调用单个评估函数
+                return await self.evaluate_response(model_response, expected_output, criteria, prompt)
+
+        # 为每个任务创建协程
+        tasks = [eval_one(task) for task in evaluation_tasks]
+        # 并发执行所有评估任务
+        return await asyncio.gather(*tasks)
+
+    def run_evaluation(self, evaluation_tasks: List[Dict]) -> List[Dict]:
+        """同步批量评估，自动调度事件循环，支持并发"""
+        import asyncio
+        try:
+            # 尝试获取当前线程的事件循环
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            # 如果没有事件循环，创建一个新的
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        try:
+            # 运行异步批量评估函数
+            return loop.run_until_complete(self.run_evaluation_async(evaluation_tasks))
+        finally:
+            # 如果事件循环不是由外部管理且未在运行，则关闭它
+            if not loop.is_running():
+                 try:
+                     # Check if loop is closed before trying to close it
+                     if not loop.is_closed():
+                         loop.close()
+                 except Exception as e:
+                     print(f"Error closing event loop: {e}") # Log error if closing fails

@@ -193,7 +193,7 @@ def render_prompt_optimization():
             st.subheader("详细测试结果")
             
             for i, case in enumerate(test_results.get("test_cases", [])):
-                with st.expander(f"测试用例 {i+1}: {case.get("case_description", case.get("case_id", ""))}"):
+                with st.expander(f"测试用例 {i+1}: {case.get('case_description', case.get('case_id', ''))}"):
                     display_test_case_details(case, inside_expander=True)
             
             # 添加清除结果按钮
@@ -417,60 +417,41 @@ def render_iterative_optimization():
                 st.success(f"已保存为新模板: {new_name2}")
 
 def generate_optimized_prompts(results, template, model, optimization_strategy, auto_evaluate=False, model_provider=None):
-    """根据测试结果生成优化提示词"""
-    
+    """
+    根据测试结果生成优化提示词
+    """
     with st.spinner("AI正在分析测试结果并生成优化提示词..."):
         # 收集评估结果
         evaluations = []
-        
         # 遍历所有测试用例
         for case in results.get("test_cases", []):
-            # 检查是否使用新的响应格式
             responses = case.get("responses", [])
-            
             if responses:
-                # 处理每个响应的评估
                 for response in responses:
                     if response.get("evaluation") and not response.get("error"):
                         evaluations.append(response["evaluation"])
             elif case.get("evaluation"):
-                # 兼容旧格式
                 evaluations.append(case["evaluation"])
-        
-        # 如果没有有效的评估结果，无法优化
         if not evaluations:
             st.error("没有找到有效的评估结果，无法生成优化提示词")
             return
-        
-        # 创建优化器
         optimizer = PromptOptimizer()
-        
-        # 生成优化提示词
         optimization_result = optimizer.optimize_prompt_sync(
             template.get("template", ""),
             evaluations,
             optimization_strategy
         )
-        
         if "error" in optimization_result:
             st.error(f"优化失败: {optimization_result['error']}")
         else:
             optimized_prompts = optimization_result.get("optimized_prompts", [])
-            
             if not optimized_prompts:
                 st.warning("未能生成优化提示词")
                 return
-            
-            # 将优化结果保存到会话状态
             st.session_state.optimized_prompts = optimized_prompts
             st.success(f"成功生成 {len(optimized_prompts)} 个优化提示词版本")
-            
-            # 显示优化提示词
             display_optimized_prompts(optimized_prompts, template, model, model_provider)
-            
-            # 自动进行批量评估
             if auto_evaluate:
-                # 创建优化后的模板列表
                 optimized_templates = []
                 for i, opt_prompt in enumerate(optimized_prompts):
                     optimized_template = dict(template)
@@ -478,15 +459,11 @@ def generate_optimized_prompts(results, template, model, optimization_strategy, 
                     optimized_template["description"] = f"优化策略: {opt_prompt.get('strategy', '')}"
                     optimized_template["template"] = opt_prompt.get("prompt", "")
                     optimized_templates.append(optimized_template)
-                
-                # 保存批量A/B测试所需数据到会话状态
                 st.session_state.batch_ab_test_original = template
                 st.session_state.batch_ab_test_optimized = optimized_templates
                 st.session_state.batch_ab_test_model = model
                 st.session_state.batch_ab_test_model_provider = model_provider
                 st.session_state.batch_ab_test_test_set = st.session_state.specialized_test_set_name
-                
-                # 跳转到批量A/B测试页面
                 st.session_state.page = "prompt_batch_ab_test"
                 st.rerun()
 

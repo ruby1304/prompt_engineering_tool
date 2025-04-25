@@ -588,3 +588,16 @@ def remove_custom_provider(provider_name: str) -> None:
     config_path = PROVIDERS_DIR / f"{provider_name}.json"
     if config_path.exists():
         config_path.unlink()
+
+def get_concurrency_limit(provider: str = None, model: str = None) -> int:
+    """获取并发限制，优先级：model > provider > global default"""
+    config = load_config()
+    # 默认全局并发限制
+    default_limit = config.get("concurrency_limit", 10)
+    # provider/model 级配置
+    concurrency_map = config.get("concurrency_map", {})
+    if model and model in concurrency_map:
+        return concurrency_map[model]
+    if provider and provider in concurrency_map:
+        return concurrency_map[provider]
+    return default_limit

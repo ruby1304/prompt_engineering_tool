@@ -108,13 +108,8 @@ def render_prompt_batch_ab_test():
                 total_tasks = total_templates
                 completed_tasks = 0
                 
-                # 准备结果存储
-                batch_results = {
-                    "original": {"template": original_template, "results": original_results},
-                    "optimized": []
-                }
-                
                 # 测试所有优化版本
+                opt_results_list = []
                 for i, opt_template in enumerate(optimized_templates):
                     status_text.text(f"测试优化版本 {i+1}...")
                     opt_results = run_test(
@@ -125,21 +120,19 @@ def render_prompt_batch_ab_test():
                         repeat_count=repeat_count,
                         temperature=temperature
                     )
-                    batch_results["optimized"].append({
+                    opt_results_list.append({
                         "template": opt_template,
                         "results": opt_results
                     })
                     completed_tasks += 1
                     progress_bar.progress(completed_tasks / total_tasks)
-                
-                # 完成进度条
+                batch_results = {
+                    "original": {"template": original_template, "results": original_results},
+                    "optimized": opt_results_list
+                }
                 progress_bar.progress(1.0)
                 status_text.text("✅ 批量评估完成!")
-                
-                # 保存结果
                 st.session_state.batch_test_results = batch_results
-                
-                # 刷新页面以显示结果
                 st.rerun()
     
     # 如果已有测试结果，显示结果

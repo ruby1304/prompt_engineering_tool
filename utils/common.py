@@ -239,8 +239,10 @@ def render_prompt_template(template: dict, test_set: dict, case: dict) -> str:
     return prompt_template
 
 def run_test(template, model, test_set, model_provider=None, repeat_count=1, temperature=0.7):
-    """运行单提示词单模型测试"""
-    # 准备结果存储
+    import asyncio
+    from config import get_concurrency_limit
+    from utils.evaluator import PromptEvaluator
+
     results = {
         "template": template,
         "model": model,
@@ -251,23 +253,16 @@ def run_test(template, model, test_set, model_provider=None, repeat_count=1, tem
         },
         "test_cases": []
     }
-    
-    # 显示进度条和状态
     progress_bar = st.progress(0)
     status_text = st.empty()
     total_cases = len(test_set.get("cases", []))
-    
-    # 设置评估器
-    evaluator = PromptEvaluator()
-    
-    # 获取模型的API客户端
+
     if model_provider:
         provider = model_provider
     else:
         try:
             provider = get_provider_from_model(model)
         except ValueError:
-            # 尝试在所有提供商中查找模型
             from config import get_available_models
             found = False
             available_models = get_available_models()
@@ -276,95 +271,110 @@ def run_test(template, model, test_set, model_provider=None, repeat_count=1, tem
                     provider = p
                     found = True
                     break
-            
             if not found:
                 st.error(f"无法确定模型 '{model}' 的提供商")
                 return None
-    
     client = get_client(provider)
-    
-    # 运行测试
-    for case_idx, case in enumerate(test_set.get("cases", [])):
+    concurrency_limit = get_concurrency_limit(provider, model)
+    semaphore = asyncio.Semaphore(concurrency_limit)
+
+    async def run_case(case_idx, case):
         case_id = case.get("id", "")
-        status_text.text(f"正在测试用例 {case_idx+1}/{total_cases}: {case_id}")
-        
-        # 渲染提示词（替换变量）
         prompt_template = render_prompt_template(template, test_set, case)
-        
-        # 获取用户输入
         user_input = case.get("user_input", "")
-        
-        # 保存当前测试用例的结果
         case_results = {
             "case_id": case_id,
             "case_description": case.get("description", ""),
             "prompt": prompt_template,
             "user_input": user_input,
             "expected_output": case.get("expected_output", ""),
-            "responses": []  # 存储多个响应及其评估结果
+            "responses": []
         }
-        
-        # 多次运行测试
         for attempt in range(repeat_count):
-            status_text.text(f"正在测试用例 {case_idx+1}/{total_cases}: {case_id}, 重复 #{attempt+1}/{repeat_count}")
-            
-            # 创建异步事件循环
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            try:
-                # 调用模型API
-                params = {"temperature": temperature, "max_tokens": 1000}
-                response = loop.run_until_complete(call_model_with_messages(
-                    client, provider, model, prompt_template, user_input, params
-                ))
-                
-                # 初始化响应结果
-                response_data = {
-                    "attempt": attempt + 1,
-                    "response": response.get("text", ""),
-                    "error": response.get("error", None),
-                    "usage": response.get("usage", {}),
-                    "evaluation": None  # 将在后面填充评估结果
-                }
-                
-                # 对当前响应进行评估
-                if not response_data["error"] and response_data["response"]:
-                    evaluation = loop.run_until_complete(evaluate_response(
-                        evaluator,
-                        response_data["response"],
-                        case.get("expected_output", ""),
-                        case.get("evaluation_criteria", {}),
-                        prompt_template
-                    ))
-                    
-                    response_data["evaluation"] = evaluation
-                
-            except Exception as e:
-                # 存储错误
-                response_data = {
-                    "attempt": attempt + 1,
-                    "response": "",
-                    "error": str(e),
-                    "usage": {},
-                    "evaluation": None
-                }
-            finally:
-                loop.close()
-            
-            # 将响应数据添加到测试用例结果中
-            case_results["responses"].append(response_data)
-        
-        # 添加测试用例结果到总结果中
-        results["test_cases"].append(case_results)
-        
-        # 更新进度条
-        progress_bar.progress((case_idx + 1) / total_cases)
-    
-    # 测试完成
-    progress_bar.progress(1.0)
+            params = {"temperature": temperature, "max_tokens": 1000}
+            async with semaphore:
+                try:
+                    response = await call_model_with_messages(
+                        client, provider, model, prompt_template, user_input, params
+                    )
+                    # 只对有内容且无error的响应做评估
+                    if response.get("text") and not response.get("error"):
+                        response_data = {
+                            "attempt": attempt + 1,
+                            "response": response.get("text", ""),
+                            "error": None,
+                            "usage": response.get("usage", {}),
+                            "evaluation": None,
+                            "_eval_input": {
+                                "response_text": response.get("text", ""),
+                                "expected_output": case.get("expected_output", ""),
+                                "criteria": case.get("evaluation_criteria", {}),
+                                "prompt": prompt_template
+                            }
+                        }
+                    else:
+                        response_data = {
+                            "attempt": attempt + 1,
+                            "response": response.get("text", ""),
+                            "error": response.get("error", "模型未返回内容"),
+                            "usage": response.get("usage", {}),
+                            "evaluation": None,
+                            "_eval_input": None
+                        }
+                except Exception as e:
+                    response_data = {
+                        "attempt": attempt + 1,
+                        "response": "",
+                        "error": str(e),
+                        "usage": {},
+                        "evaluation": None,
+                        "_eval_input": None
+                    }
+                case_results["responses"].append(response_data)
+        return case_results
+
+    async def run_all_cases():
+        tasks = []
+        for case_idx, case in enumerate(test_set.get("cases", [])):
+            tasks.append(run_case(case_idx, case))
+        progress_bar = st.progress(0)
+        results_list = []
+        for i, coro in enumerate(asyncio.as_completed(tasks)):
+            result = await coro
+            results_list.append(result)
+            progress_bar.progress((i + 1) / total_cases)
+        progress_bar.progress(1.0)
+        return results_list
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    all_case_results = loop.run_until_complete(run_all_cases())
+    # 并发批量评估（只对有内容的响应）
+    eval_inputs = []
+    eval_response_refs = []
+    for case in all_case_results:
+        for resp in case["responses"]:
+            if resp.get("_eval_input"):
+                eval_inputs.append(resp["_eval_input"])
+                eval_response_refs.append(resp)
+    if eval_inputs:
+        evaluator = PromptEvaluator()
+        # 修改：传递一个包含所有评估所需信息的任务列表
+        eval_results = evaluator.run_evaluation(
+            evaluation_tasks=[{
+                "model_response": item["response_text"], # 传递实际的模型响应
+                "expected_output": item["expected_output"],
+                "criteria": item["criteria"],
+                "prompt": item["prompt"] # 传递对应的提示词
+            } for item in eval_inputs]
+        )
+        # This zip assumes the order of eval_results matches eval_response_refs
+        for resp, eval_result in zip(eval_response_refs, eval_results):
+            resp["evaluation"] = eval_result
+            del resp["_eval_input"] # Clean up temporary data
+    results["test_cases"] = all_case_results
+    loop.close()
     status_text.text("✅ 测试完成!")
-    
     return results
 
 def regenerate_expected_output(case: dict, template: dict, model: str, provider: str = None, temperature: float = 0.7):

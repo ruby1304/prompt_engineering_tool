@@ -9,7 +9,7 @@ from config import get_template_list, load_template, get_test_set_list, load_tes
 from models.api_clients import get_client, get_provider_from_model
 from models.token_counter import count_tokens, estimate_cost
 from utils.evaluator import PromptEvaluator
-from utils.common import render_prompt_template
+from utils.common import render_prompt_template, run_test
 
 def render_test_runner():
     st.title("🧪 测试运行")
@@ -179,22 +179,17 @@ def render_test_runner():
         )
 
 def run_tests(templates, test_set, selected_models, temperature, max_tokens, repeat_count, test_mode):
-    """运行测试并显示进度"""
+    """运行测试并显示进度（并发重构版）"""
     st.subheader("测试运行中...")
-    
-    # 创建进度条
     progress_bar = st.progress(0)
     status_text = st.empty()
     result_area = st.empty()
-    
-    # 计算总任务数
-    total_tasks = len(templates) * len(test_set["cases"]) * len(selected_models) * repeat_count
+    total_tasks = len(templates) * len(selected_models)
     completed_tasks = 0
-    
-    # 准备结果存储
     results = {}
     for template in templates:
-        results[template["name"]] = {
+        template_name = template["name"]
+        results[template_name] = {
             "template": template,
             "test_set": test_set["name"],
             "models": selected_models,
@@ -204,163 +199,38 @@ def run_tests(templates, test_set, selected_models, temperature, max_tokens, rep
             },
             "test_cases": []
         }
-    
-    # 设置评估器
-    config = load_config()
-    selected_evaluator = config.get("evaluator_model", "gpt-4")
-    use_local_eval = config.get("use_local_evaluation", False)
-    
-    # 创建评估器实例
-    evaluator = PromptEvaluator(evaluator_model=selected_evaluator)
-    
-    # 强制使用本地评估（如果选择）
-    if use_local_eval:
-        evaluator.use_local_evaluation = True
-    
-    # 运行测试
-    for template in templates:
-        template_name = template["name"]
-        status_text.text(f"正在测试提示词模板: {template_name}")
-        
-        for case in test_set["cases"]:
-            case_id = case["id"]
-            status_text.text(f"正在测试模板 '{template_name}' 的用例 '{case_id}'")
-            
-            # 使用通用渲染函数
-            prompt_template = render_prompt_template(template, test_set, case)
-            
-            # 获取用户输入
-            user_input = case.get("user_input", "")
-            
-            # 保存当前测试用例的结果
-            case_results = {
-                "case_id": case_id,
-                "case_description": case.get("description", ""),
-                "prompt": prompt_template,
-                "user_input": user_input,
-                "expected_output": case.get("expected_output", ""),
-                "model_responses": [],
-                "evaluation": None
-            }
-            
-            # 为每个模型运行测试
-            for model in selected_models:
-                # 获取模型对应的提供商
-                if hasattr(st.session_state, 'model_provider_map') and model in st.session_state.model_provider_map:
-                    provider = st.session_state.model_provider_map[model]
-                else:
-                    # 兼容旧代码，尝试从模型名称推断提供商
-                    try:
-                        provider = get_provider_from_model(model)
-                    except ValueError:
-                        st.error(f"无法确定模型 '{model}' 的提供商")
-                        continue
-                
-                client = get_client(provider)
-                
-                # 重复测试
-                for i in range(repeat_count):
-                    status_text.text(f"正在测试模板 '{template_name}' 的用例 '{case_id}', 模型 '{model}', 重复 #{i+1}")
-                    
-                    try:
-                        # 修改调用模型API的方式，将提示词作为系统提示，用户输入作为用户消息
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        
-                        # 根据不同客户端类型构建不同的消息格式
-                        if provider in ["openai", "xai"]:
-                            response = loop.run_until_complete(client.generate_with_messages(
-                                [
-                                    {"role": "system", "content": prompt_template},
-                                    {"role": "user", "content": user_input}
-                                ],
-                                model, 
-                                {"temperature": temperature, "max_tokens": max_tokens}
-                            ))
-                        else:
-                            # 对于其他API客户端，我们可能需要调整消息格式或者合并内容
-                            combined_prompt = f"System: {prompt_template}\n\nUser: {user_input}"
-                            response = loop.run_until_complete(client.generate(
-                                combined_prompt, 
-                                model, 
-                                {"temperature": temperature, "max_tokens": max_tokens}
-                            ))
-                        
-                        loop.close()
-                        
-                        # 存储响应
-                        case_results["model_responses"].append({
-                            "model": model,
-                            "attempt": i+1,
-                            "response": response.get("text", ""),
-                            "error": response.get("error", None),
-                            "usage": response.get("usage", {})
-                        })
-                        
-                    except Exception as e:
-                        # 存储错误
-                        case_results["model_responses"].append({
-                            "model": model,
-                            "attempt": i+1,
-                            "response": "",
-                            "error": str(e),
-                            "usage": {}
-                        })
-                    
-                    # 更新进度
-                    completed_tasks += 1
-                    progress_bar.progress(completed_tasks / total_tasks)
-                    
-                    # 模拟API调用延迟
-                    time.sleep(0.5)
-            
-            # 对测试结果进行评估
-            # 选择最后一次响应进行评估
-            response_text = ""
-            for resp in reversed(case_results["model_responses"]):
-                if not resp.get("error") and resp.get("response"):
-                    response_text = resp.get("response")
-                    break
-            if response_text:
-                try:
-                    # 使用同步方法替代
-                    evaluation = evaluator.evaluate_response_sync(
-                        response_text,
-                        case.get("expected_output", ""),
-                        case.get("evaluation_criteria", {}),
-                        prompt_template
-                    )
-                    case_results["evaluation"] = evaluation
-                except Exception as e:
-                    case_results["evaluation"] = {"error": str(e)}
-            
-            # 添加到结果
-            results[template_name]["test_cases"].append(case_results)
-            
-            # 显示中间结果
-            result_summary = f"已完成: {completed_tasks}/{total_tasks} 测试"
-            result_area.text(result_summary)
-    
-    # 测试完成
+        for model in selected_models:
+            provider = st.session_state.model_provider_map.get(model) if hasattr(st.session_state, 'model_provider_map') else None
+            # 调用 run_test 并发批量测试
+            test_result = run_test(
+                template=template,
+                model=model,
+                test_set=test_set,
+                model_provider=provider,
+                repeat_count=repeat_count,
+                temperature=temperature
+            )
+            # 合并结果
+            if test_result and "test_cases" in test_result:
+                # 按模型区分结果
+                for idx, case in enumerate(test_result["test_cases"]):
+                    case["model"] = model
+                    results[template_name]["test_cases"].append(case)
+            completed_tasks += 1
+            progress_bar.progress(completed_tasks / total_tasks)
+            result_area.text(f"已完成: {completed_tasks}/{total_tasks} 组 (模板×模型) 测试")
     progress_bar.progress(1.0)
     status_text.text("✅ 测试完成!")
-    
-    # 保存结果
     result_name = f"test_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     save_result(result_name, results)
-    
     st.success(f"测试结果已保存: {result_name}")
-    
-    # 结果预览区域
     from ui.components import display_test_case_details
     st.subheader("测试结果预览")
     for template_name, template_result in results.items():
         st.markdown(f"#### 提示词模板: {template_name}")
         for i, case in enumerate(template_result["test_cases"]):
-            st.markdown(f"测试用例 {i+1}: {case.get('case_description', case.get('case_id', '') )}")
+            st.markdown(f"测试用例 {i+1}: {case.get('case_description', case.get('case_id', '') )} (模型: {case.get('model')})")
             display_test_case_details(case, show_system_prompt=True, inside_expander=False)
-    
-    # 建议跳转到结果查看页面
     st.session_state.last_result = result_name
     st.session_state.page = "results_viewer"
     st.rerun()

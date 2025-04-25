@@ -91,45 +91,26 @@ def render_prompt_ab_test():
         if st.button("▶️ 运行A/B测试", type="primary"):
             # 加载测试集
             test_set = load_test_set(test_set_name)
-            
             if not test_set or not test_set.get("cases"):
                 st.error(f"无法加载测试集 '{test_set_name}' 或测试集为空")
                 return
-            
             with st.spinner("A/B测试运行中..."):
-                # 运行原始提示词测试
-                st.text("测试原始提示词...")
-                original_results = run_test(
-                    original_template, 
-                    model, 
-                    test_set, 
-                    model_provider=model_provider,
-                    repeat_count=repeat_count,
-                    temperature=temperature
-                )
-                
-                # 运行优化提示词测试
-                st.text("测试优化提示词...")
-                optimized_results = run_test(
-                    optimized_template, 
-                    model, 
+                ab_test_results = run_test(
+                    [original_template, optimized_template],
+                    model,
                     test_set,
                     model_provider=model_provider,
                     repeat_count=repeat_count,
                     temperature=temperature
                 )
-                
-                # 保存结果
                 st.session_state.ab_test_results = {
-                    "original": original_results,
-                    "optimized": optimized_results,
+                    "original": ab_test_results[0],
+                    "optimized": ab_test_results[1],
                     "params": {
                         "repeat_count": repeat_count,
                         "temperature": temperature
                     }
                 }
-                
-                # 刷新页面以显示结果
                 st.rerun()
     
     # 如果已有测试结果，显示结果
