@@ -19,7 +19,6 @@ from utils.common import (
     get_dimension_scores, 
     create_dimension_radar_chart,
     run_test,
-    display_template_info,
     save_optimized_template
 )
 from ui.components import (
@@ -323,7 +322,7 @@ def render_iterative_optimization():
     selected_model_option = st.selectbox("选择模型", model_options, key="iter_model")
     selected_model, selected_provider = model_map[selected_model_option] if selected_model_option else (None, None)
 
-    # 新增：测试集选择方式
+    # 步骤2: 选择测试集
     st.subheader("步骤2: 选择测试集")
     test_set_mode = st.radio(
         "测试集来源",
@@ -333,23 +332,39 @@ def render_iterative_optimization():
     )
     test_set = []
     test_set_name = None
+    
     if test_set_mode == "选择已有测试集":
         test_set_list = get_test_set_list()
         if not test_set_list:
             st.warning("未找到测试集，请先创建测试集")
             return
         selected_test_set = st.selectbox("选择测试集", test_set_list, key="iter_testset")
-        test_set = load_test_set(selected_test_set).get("cases", []) if selected_test_set else []
-        test_set_name = selected_test_set
-        st.info(f"**测试用例数**: {len(test_set)}")
+        if selected_test_set:
+            loaded_test_set = load_test_set(selected_test_set)
+            # 修正：始终取用例列表，且过滤无效用例
+            test_set = loaded_test_set.get("cases", [])
+            # 过滤掉不完整的用例
+            test_set = [case for case in test_set if case.get("user_input") and case.get("expected_output") and case.get("evaluation_criteria")]
+            test_set_name = selected_test_set
+            st.info(f"**测试用例数**: {len(test_set)}")
     else:
         # AI自动生成新测试集
         test_set_name = st.text_input("新测试集名称", value=f"AI生成测试集_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
         test_set_desc = st.text_input("新测试集描述", value="自动生成的测试集")
-        gen_case_count = st.number_input("生成测试用例数量", min_value=3, max_value=1000, value=6, step=1) # Changed max_value to 1000
+        gen_case_count = st.number_input("生成测试用例数量", min_value=3, max_value=1000, value=6, step=1)
+        
+        # 显示提示信息
         st.info("将根据当前提示词模板和模型，自动生成高质量测试用例")
+        
+        # 可以添加自定义测试方向的选项
+        test_directions = st.text_area(
+            "测试方向（可选）", 
+            placeholder="输入特定测试方向，每行一个，例如：\n语义理解能力测试\n边界条件处理测试\n多语言处理能力测试",
+            help="指定特定的测试方向，系统会针对这些方向生成测试用例"
+        )
 
-    # 迭代次数
+    # 迭代参数
+    st.subheader("步骤3: 设置优化参数")
     max_iterations = st.slider("迭代次数", 1, 10, 3)
     optimization_strategy = st.selectbox(
         "优化策略",
@@ -362,71 +377,343 @@ def render_iterative_optimization():
         }.get(x, x),
         key="iter_strategy"
     )
+    
+    # 开始优化按钮
     if st.button("🚀 开始自动迭代优化", type="primary"):
-        # --- Progress Bar Setup for Iterations ---
+        # 检查必要参数是否已选择
+        if not template or not selected_model:
+            st.error("请先选择提示词模板和模型")
+            return
+            
+        # Progress Bar Setup for Test Set Generation and Iterations
+        progress_container = st.container()
+        with progress_container:
+            generation_progress_bar = st.progress(0)
+            generation_status_text = st.empty()
+            # 修复这里的消息提示，根据测试集来源显示不同的准备信息
+            if test_set_mode == "选择已有测试集":
+                generation_status_text.text("准备使用已选择的测试集...")
+            else:
+                generation_status_text.text("准备生成测试集...")
+        
+        test_cases_for_optimization = []
+        
+        # 如果是AI自动生成测试集模式，先生成测试集
+        if test_set_mode == "AI自动生成新测试集":
+            with st.spinner("AI正在为您生成测试集..."):
+                evaluator = PromptEvaluator()
+                
+                # 处理测试方向
+                test_purposes = []
+                if test_directions:
+                    # 分割多行的测试方向
+                    directions = [d.strip() for d in test_directions.strip().split("\n") if d.strip()]
+                    if directions:
+                        # 如果有指定测试方向，按方向生成测试用例
+                        generation_status_text.text(f"正在生成多方向测试集，共{len(directions)}个方向...")
+                        
+                        # 每个方向生成对应数量的测试用例
+                        cases_per_direction = max(1, gen_case_count // len(directions))
+                        
+                        # 创建基本的示例测试用例
+                        example_case = {
+                            "id": "example_case",
+                            "description": f"{template.get('name', '提示词')}测试用例",
+                            "user_input": "请给我讲解一下这个提示词的用途",
+                            "expected_output": f"这个提示词用于{template.get('description', '特定任务处理')}，通过精确的指令引导模型输出高质量结果。",
+                            "evaluation_criteria": {
+                                "accuracy": "评估回答的准确性",
+                                "completeness": "评估回答的完整性",
+                                "relevance": "评估回答的相关性",
+                                "clarity": "评估回答的清晰度"
+                            }
+                        }
+                        
+                        # 定义进度回调函数
+                        def update_generation_progress(current, total):
+                            progress = min(current / total, 1.0) if total > 0 else 0
+                            generation_progress_bar.progress(progress)
+                            generation_status_text.text(f"正在生成测试用例... 已完成: {current}/{total}")
+                        
+                        # 批量生成测试用例，传入进度回调函数
+                        batch_result = evaluator.generate_test_cases_batch(
+                            model=selected_model,
+                            test_purposes=directions,
+                            example_case=example_case,
+                            target_count_per_purpose=cases_per_direction,
+                            progress_callback=update_generation_progress
+                        )
+                        
+                        if "error" in batch_result:
+                            st.error(f"生成测试集失败: {batch_result['error']}")
+                            return
+                            
+                        if "errors" in batch_result and batch_result["errors"]:
+                            for error in batch_result["errors"]:
+                                st.warning(error)
+                                
+                        test_cases_for_optimization = batch_result.get("test_cases", [])
+                else:
+                    # 直接生成完整测试集
+                    generation_status_text.text("正在生成通用测试集...")
+                    
+                    # 定义进度回调函数
+                    def update_generation_progress(current, total):
+                        progress = min(current / total, 1.0) if total > 0 else 0
+                        generation_progress_bar.progress(progress)
+                        generation_status_text.text(f"正在生成测试用例... 已完成: {current}/{total}")
+                    
+                    result = evaluator.generate_complete_test_set(
+                        name=test_set_name,
+                        description=test_set_desc,
+                        model=selected_model,
+                        count=gen_case_count
+                    )
+                    
+                    if "error" in result:
+                        st.error(f"生成测试集失败: {result['error']}")
+                        return
+                        
+                    generated_test_set = result.get("test_set", {})
+                    test_cases_for_optimization = generated_test_set.get("cases", [])
+                    
+                    # 保存生成的测试集
+                    from config import save_test_set
+                    save_test_set(test_set_name, generated_test_set)
+                    
+                # 检查生成的测试用例数量
+                if not test_cases_for_optimization:
+                    st.error("未能生成测试用例，请尝试其他参数或使用已有测试集")
+                    return
+                    
+                # 更新生成进度
+                generation_progress_bar.progress(1.0)
+                generation_status_text.success(f"✅ 成功生成 {len(test_cases_for_optimization)} 个测试用例")
+                
+                # 展示生成的测试用例
+                with st.expander("查看生成的测试用例"):
+                    for i, case in enumerate(test_cases_for_optimization):
+                        st.write(f"**测试用例 {i+1}**: {case.get('description', '')}")
+                        st.write(f"- **用户输入**: {case.get('user_input', '')}")
+                        st.write(f"- **期望输出**: {case.get('expected_output', '')}")
+                        st.write("---")
+        else:
+            # 使用已有测试集
+            # 修正：始终过滤无效用例
+            test_cases_for_optimization = [case for case in test_set if case.get("user_input") and case.get("expected_output") and case.get("evaluation_criteria")]
+
+        # 检查是否有测试用例用于优化
+        if not test_cases_for_optimization:
+            st.error("未能获取或生成有效的测试用例，无法开始优化。请确保测试集中的每个用例都包含 user_input、expected_output 和 evaluation_criteria。")
+            return
+
+        # 设置双进度条
         iteration_progress_bar = st.progress(0)
         iteration_status_text = st.empty()
-        # --- End Progress Bar Setup ---
-        
-        with st.spinner("正在准备迭代优化..."): # Spinner for initial setup like test case generation
-            # ... (code for AI test set generation if selected) ...
+        inner_progress_bar = st.progress(0)
+        inner_status_text = st.empty()
+
+        # 进度回调，支持两层进度
+        def iteration_progress_callback(iteration, total_iterations, inner_idx, inner_total, global_idx, global_total, stage=None, avg_score=None):
+            # 输出debug信息以便跟踪进度回调
+            print(f"[调试] 进度回调: 轮次={iteration}/{total_iterations}, 内部进度={inner_idx}/{inner_total}, 全局进度={global_idx}/{global_total}, 阶段={stage}, 分数={avg_score}")
             
-            # Check if test_set is valid before proceeding
-            if not test_set:
-                 st.error("未能获取或生成有效的测试用例，无法开始优化。")
-                 return
+            # 外层进度（轮数）
+            iter_progress = min(iteration / total_iterations, 1.0) if total_iterations > 0 else 0
+            iteration_progress_bar.progress(iter_progress)
+            iteration_status = f"迭代优化进行中... 第 {iteration}/{total_iterations} 轮"
+            if avg_score is not None:
+                iteration_status += f"，当前分数: {avg_score:.2f}"
+            iteration_status_text.text(iteration_status)
+            
+            # 内层进度（本轮评估/优化评估）
+            if stage == "gen":
+                inner_progress = min(inner_idx / inner_total, 1.0) if inner_total > 0 else 0
+                inner_progress_bar.progress(inner_progress)
+                inner_status_text.text(f"本轮生成响应进度: {inner_idx}/{inner_total}")
+            elif stage == "eval":
+                inner_progress = min(inner_idx / inner_total, 1.0) if inner_total > 0 else 0
+                inner_progress_bar.progress(inner_progress)
+                inner_status_text.text(f"本轮评估进度: {inner_idx}/{inner_total}")
+            elif stage == "opt_gen":
+                inner_progress = min(inner_idx / inner_total, 1.0) if inner_total > 0 else 0
+                inner_progress_bar.progress(inner_progress)
+                inner_status_text.text(f"优化版本生成进度: {inner_idx}/{inner_total}")
+            elif stage == "opt_eval":
+                inner_progress = min(inner_idx / inner_total, 1.0) if inner_total > 0 else 0
+                inner_progress_bar.progress(inner_progress)
+                inner_status_text.text(f"优化版本评估进度: {inner_idx}/{inner_total}")
+            elif stage == "eval_done":
+                inner_progress_bar.progress(1.0)
+                inner_status = f"本轮评估完成! 平均分: {avg_score:.2f}" if avg_score is not None else "本轮评估完成!"
+                inner_status_text.success(inner_status)
+            else:
+                # 其他阶段
+                inner_status_text.text(f"正在处理... 阶段: {stage}")
 
-        # Now start the iterative process
-        optimizer = PromptOptimizer()
-        evaluator = PromptEvaluator()
-        
-        # Define the progress callback for iterations
-        def iteration_progress_callback(iteration, total_iterations, score):
-            progress = iteration / total_iterations
-            iteration_progress_bar.progress(progress)
-            iteration_status_text.info(f"第 {iteration}/{total_iterations} 轮优化评估完成，平均分：{score:.2f}")
-            # Note: We don't have fine-grained progress *within* the iteration here easily
-
-        # Run the iterative optimization
-        iteration_status_text.text("开始多轮迭代优化与评估...")
-        result = optimizer.iterative_prompt_optimization_sync(
-            initial_prompt=template.get("template", ""),
-            test_set=test_set, # Pass the actual list of cases
-            evaluator=evaluator,
-            optimization_strategy=optimization_strategy,
-            model=selected_model,
-            provider=selected_provider,
-            max_iterations=max_iterations,
-            progress_callback=iteration_progress_callback # Pass the iteration callback
-        )
-        
-        # Final status update
-        iteration_progress_bar.progress(1.0)
-        iteration_status_text.success("✅ 自动迭代优化完成！")
-        
-        # 展示每轮结果
-        history = result.get("history", [])
-        for item in history:
-            with st.expander(f"第{item['iteration']}轮 优化版本"):
-                st.markdown(f"**平均分**: {item['avg_score']:.2f}")
-                st.code(item['prompt'], language="markdown")
-        # 展示最优结果
-        st.markdown("---")
-        st.header("最优提示词")
-        best_prompt = result.get("best_prompt", "")
-        best_score = result.get("best_score", 0)
-        st.code(best_prompt, language="markdown")
-        st.markdown(f"**最优平均分**: {best_score:.2f}")
-        # 自动保存最优提示词为新模板，并存入session_state
-        from utils.common import save_optimized_template
-        new_name = save_optimized_template(template, {"prompt": best_prompt}, 0)
-        st.session_state.iter_best_prompt = best_prompt
-        st.session_state.iter_best_score = best_score
-        st.session_state.iter_best_template_name = new_name
-        st.success(f"最优提示词已自动保存为新模板: {new_name}")
-        if st.button("💾 再次保存最优提示词为新模板"):
-            new_name2 = save_optimized_template(template, {"prompt": best_prompt}, int(time.time())%10000)
-            st.success(f"已保存为新模板: {new_name2}")
+        try:
+            st.info(f"即将开始迭代优化，计划进行 {max_iterations} 轮迭代...")
+            iteration_status_text.text("开始多轮迭代优化与评估...")
+            
+            # 添加时间戳记录开始时间
+            start_time = time.time()
+            
+            # 执行迭代优化
+            result = PromptOptimizer().iterative_prompt_optimization_sync(
+                initial_prompt=template.get("template", ""),
+                test_set=test_cases_for_optimization, 
+                evaluator=PromptEvaluator(),
+                optimization_strategy=optimization_strategy,
+                model=selected_model,
+                provider=selected_provider,
+                max_iterations=max_iterations,
+                progress_callback=iteration_progress_callback
+            )
+            
+            # 记录完成时间和总耗时
+            end_time = time.time()
+            total_time = end_time - start_time
+            st.success(f"迭代优化完成！总耗时: {total_time:.1f} 秒")
+            
+            # 检查结果
+            if "error" in result:
+                st.error(f"迭代优化过程出错: {result.get('error')}")
+                if result.get("history"):
+                    st.info("尽管出现错误，仍能展示部分结果")
+                else:
+                    return
+                
+            # 获取历史记录
+            history = result.get("history", [])
+            if not history:
+                st.warning("未能获取迭代优化历史记录")
+                return
+                
+            # 记录每轮的数据量
+            history_stats = {}
+            for item in history:
+                iteration = item.get('iteration', 0)
+                stage = item.get('stage', 'unknown')
+                if iteration not in history_stats:
+                    history_stats[iteration] = {'initial': 0, 'optimized': 0}
+                if stage == 'initial':
+                    history_stats[iteration]['initial'] += 1
+                elif stage == 'optimized':
+                    history_stats[iteration]['optimized'] += 1
+            
+            st.write("迭代历史数据统计:")
+            for iter_num, stats in sorted(history_stats.items()):
+                st.write(f"- 第 {iter_num} 轮: 初始提示词 {stats['initial']} 个, 优化版本 {stats['optimized']} 个")
+                
+            # 更新最终进度
+            iteration_progress_bar.progress(1.0)
+            iteration_status_text.success("✅ 自动迭代优化完成！")
+            inner_progress_bar.progress(1.0)
+            inner_status_text.success("全部评估任务已完成！")
+            
+            # 按迭代轮次重组结果，便于展示
+            iteration_results = {}
+            for item in history:
+                iteration = item.get('iteration', 0)
+                if iteration not in iteration_results:
+                    iteration_results[iteration] = {
+                        'initial': None,
+                        'optimized': []
+                    }
+                
+                stage = item.get('stage', '')
+                if stage == 'initial':
+                    iteration_results[iteration]['initial'] = item
+                elif stage == 'optimized':
+                    iteration_results[iteration]['optimized'].append(item)
+                    
+            # 输出一些调试信息
+            st.write(f"共完成 {len(iteration_results)} 轮迭代")
+            
+            # 展示每轮结果
+            for iter_num in sorted(iteration_results.keys()):
+                iter_data = iteration_results[iter_num]
+                
+                with st.expander(f"第 {iter_num} 轮迭代", expanded=True):
+                    # 显示本轮初始提示词
+                    if iter_data['initial']:
+                        st.subheader(f"当前提示词 (平均分: {iter_data['initial'].get('avg_score', 0):.2f})")
+                        st.code(iter_data['initial']['prompt'], language="markdown")
+                    else:
+                        st.info(f"未找到第 {iter_num} 轮的初始提示词信息")
+                    
+                    # 如果是最后一轮迭代，不会有优化版本
+                    if not iter_data['optimized'] and iter_num == max_iterations:
+                        st.info("最后一轮迭代，无需生成优化版本")
+                        continue
+                    
+                    # 显示本轮生成的优化版本
+                    if iter_data['optimized']:
+                        st.subheader(f"本轮生成的优化版本 ({len(iter_data['optimized'])} 个)")
+                        
+                        # 先找出最佳版本
+                        best_version = None
+                        for version in iter_data['optimized']:
+                            if version.get('is_best', False):
+                                best_version = version
+                                break
+                        
+                        # 如果没有明确标记最佳版本，找出分数最高的
+                        if not best_version and iter_data['optimized']:
+                            best_version = max(iter_data['optimized'], key=lambda x: x.get('avg_score', 0))
+                        
+                        # 展示每个优化版本 - 不再使用嵌套expander，而是使用容器和分隔线
+                        for version in iter_data['optimized']:
+                            is_best = version.get('is_best', False) or (best_version and version.get('prompt') == best_version.get('prompt'))
+                            version_label = f"版本 {version.get('version', '?')}"
+                            
+                            if is_best:
+                                version_label += " ✅ (选为下一轮的提示词)"
+                            
+                            version_score = version.get('avg_score', 0)
+                            version_strategy = version.get('strategy', '未知策略')
+                            
+                            # 使用容器替代嵌套的expander
+                            version_container = st.container()
+                            with version_container:
+                                st.markdown(f"### {version_label} - {version_strategy} (平均分: {version_score:.2f})")
+                                st.markdown(f"**优化策略**: {version_strategy}")
+                                if version.get('prompt'):
+                                    st.code(version['prompt'], language="markdown")
+                                else:
+                                    st.warning("未找到此版本的提示词内容")
+                                st.markdown("---")  # 添加分隔线
+                    else:
+                        st.info(f"第 {iter_num} 轮未生成优化版本")
+            
+            # 展示最优结果
+            st.markdown("---")
+            st.header("最终最优提示词")
+            best_prompt = result.get("best_prompt", "")
+            best_score = result.get("best_score", 0)
+            
+            if best_prompt:
+                st.code(best_prompt, language="markdown")
+                st.markdown(f"**最优平均分**: {best_score:.2f}")
+                
+                # 自动保存最优提示词为新模板
+                from utils.common import save_optimized_template
+                new_name = save_optimized_template(template, {"prompt": best_prompt}, 0)
+                st.session_state.iter_best_prompt = best_prompt
+                st.session_state.iter_best_score = best_score
+                st.session_state.iter_best_template_name = new_name
+                st.success(f"最优提示词已自动保存为新模板: {new_name}")
+                
+                # 提供再次保存的选项
+                if st.button("💾 再次保存最优提示词为新模板"):
+                    new_name2 = save_optimized_template(template, {"prompt": best_prompt}, int(time.time())%10000)
+                    st.success(f"已保存为新模板: {new_name2}")
+            else:
+                st.warning("未能获取最优提示词结果")
+        except Exception as e:
+            st.error(f"迭代优化过程出错: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc(), language="python")
 
 def generate_optimized_prompts(results, template, model, optimization_strategy, auto_evaluate=False, model_provider=None):
     """

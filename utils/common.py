@@ -12,6 +12,8 @@ from models.token_counter import count_tokens
 from models.api_clients import get_client, get_provider_from_model
 from utils.evaluator import PromptEvaluator
 from config import load_config
+# Import the new parallel executor
+from utils.parallel_executor import execute_model, execute_models, execute_model_sync, execute_models_sync
 
 def calculate_average_score(results):
     """计算平均得分"""
@@ -189,25 +191,17 @@ def create_score_bar_chart(scores, labels, title="平均得分对比"):
 async def call_model_with_messages(client, provider, model, system_prompt, user_input, params):
     """调用模型API并返回响应"""
     try:
+        # 使用新的并行执行器实现
         if provider in ["openai", "xai"]:
-            response = await client.generate_with_messages(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_input}
-                ],
-                model, 
-                params
-            )
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_input}
+            ]
+            return await execute_model(model, messages=messages, provider=provider, params=params)
         else:
             # 对于其他API客户端
             combined_prompt = f"System: {system_prompt}\n\nUser: {user_input}"
-            response = await client.generate(
-                combined_prompt, 
-                model, 
-                params
-            )
-        
-        return response
+            return await execute_model(model, prompt=combined_prompt, provider=provider, params=params)
     except Exception as e:
         return {"error": str(e), "text": "", "usage": {}}
 
@@ -239,8 +233,8 @@ def render_prompt_template(template: dict, test_set: dict, case: dict) -> str:
     return prompt_template
 
 def run_test(template, model, test_set, model_provider=None, repeat_count=1, temperature=0.7, progress_callback: Optional[Callable] = None):
+    """运行测试，使用并行执行器处理并发请求"""
     import asyncio
-    from config import get_concurrency_limit
     from utils.evaluator import PromptEvaluator
 
     results = {
@@ -255,6 +249,7 @@ def run_test(template, model, test_set, model_provider=None, repeat_count=1, tem
     }
     total_cases = len(test_set.get("cases", []))
 
+    # 确定提供商
     if model_provider:
         provider = model_provider
     else:
@@ -272,78 +267,114 @@ def run_test(template, model, test_set, model_provider=None, repeat_count=1, tem
             if not found:
                 st.error(f"无法确定模型 '{model}' 的提供商")
                 return None
-    client = get_client(provider)
-    concurrency_limit = get_concurrency_limit(provider, model)
-    semaphore = asyncio.Semaphore(concurrency_limit)
 
-    async def run_case(case_idx, case):
-        case_id = case.get("id", "")
-        prompt_template = render_prompt_template(template, test_set, case)
-        user_input = case.get("user_input", "")
-        case_results = {
-            "case_id": case_id,
-            "case_description": case.get("description", ""),
-            "prompt": prompt_template,
-            "user_input": user_input,
-            "expected_output": case.get("expected_output", ""),
-            "responses": []
-        }
-        for attempt in range(repeat_count):
-            params = {"temperature": temperature, "max_tokens": 1000}
-            async with semaphore:
-                try:
-                    response = await call_model_with_messages(
-                        client, provider, model, prompt_template, user_input, params
-                    )
-                    # 只对有内容且无error的响应做评估
-                    if response.get("text") and not response.get("error"):
-                        response_data = {
-                            "attempt": attempt + 1,
-                            "response": response.get("text", ""),
-                            "error": None,
-                            "usage": response.get("usage", {}),
-                            "evaluation": None,
-                            "_eval_input": {
-                                "response_text": response.get("text", ""),
-                                "expected_output": case.get("expected_output", ""),
-                                "criteria": case.get("evaluation_criteria", {}),
-                                "prompt": prompt_template
-                            }
-                        }
-                    else:
-                        response_data = {
-                            "attempt": attempt + 1,
-                            "response": response.get("text", ""),
-                            "error": response.get("error", "模型未返回内容"),
-                            "usage": response.get("usage", {}),
-                            "evaluation": None,
-                            "_eval_input": None
-                        }
-                except Exception as e:
-                    response_data = {
-                        "attempt": attempt + 1,
-                        "response": "",
-                        "error": str(e),
-                        "usage": {},
-                        "evaluation": None,
-                        "_eval_input": None
-                    }
-                case_results["responses"].append(response_data)
-                if progress_callback:
-                    progress_callback()
-        return case_results
-
-    async def run_all_cases():
-        tasks = []
+    async def run_all_tests():
+        all_requests = []
+        
+        # 准备所有请求，整理成适合批处理的格式
         for case_idx, case in enumerate(test_set.get("cases", [])):
-            tasks.append(run_case(case_idx, case))
-        results_list = await asyncio.gather(*tasks)
-        return results_list
-
+            case_id = case.get("id", "")
+            prompt_template = render_prompt_template(template, test_set, case)
+            user_input = case.get("user_input", "")
+            
+            # 为每次尝试创建请求
+            for attempt in range(repeat_count):
+                params = {"temperature": temperature, "max_tokens": 1000}
+                
+                # 根据不同提供商准备不同格式的请求
+                request = {
+                    "model": model,
+                    "provider": provider,
+                    "params": params,
+                    "context": {
+                        "case_id": case_id,
+                        "case_idx": case_idx,
+                        "attempt": attempt,
+                        "user_input": user_input,
+                        "expected_output": case.get("expected_output", ""),
+                        "evaluation_criteria": case.get("evaluation_criteria", {}),
+                        "prompt": prompt_template
+                    }
+                }
+                
+                # 根据提供商选择消息格式或普通文本格式
+                if provider in ["openai", "xai"]:
+                    request["messages"] = [
+                        {"role": "system", "content": prompt_template},
+                        {"role": "user", "content": user_input}
+                    ]
+                else:
+                    request["prompt"] = f"System: {prompt_template}\n\nUser: {user_input}"
+                
+                all_requests.append(request)
+        
+        # 使用并行执行器批量处理请求
+        model_responses = await execute_models(all_requests, progress_callback=lambda current, total: None)
+        
+        # 整理测试用例结果
+        case_results = {}
+        for response in model_responses:
+            context = response.get("context", {})
+            case_id = context.get("case_id", "")
+            case_idx = context.get("case_idx", -1)
+            attempt = context.get("attempt", 0)
+            
+            # 如果这是新的测试用例，创建结果字典
+            if case_id not in case_results:
+                case_results[case_id] = {
+                    "case_id": case_id,
+                    "case_description": test_set.get("cases", [])[case_idx].get("description", "") if case_idx >= 0 else "",
+                    "prompt": context.get("prompt", ""),
+                    "user_input": context.get("user_input", ""),
+                    "expected_output": context.get("expected_output", ""),
+                    "responses": []
+                }
+            
+            # 处理响应结果
+            if "error" not in response and response.get("text"):
+                response_data = {
+                    "attempt": attempt + 1,
+                    "response": response.get("text", ""),
+                    "error": None,
+                    "usage": response.get("usage", {}),
+                    "evaluation": None,
+                    "_eval_input": {
+                        "response_text": response.get("text", ""),
+                        "expected_output": context.get("expected_output", ""),
+                        "criteria": context.get("evaluation_criteria", {}),
+                        "prompt": context.get("prompt", "")
+                    }
+                }
+            else:
+                response_data = {
+                    "attempt": attempt + 1,
+                    "response": response.get("text", ""),
+                    "error": response.get("error", "模型未返回内容"),
+                    "usage": response.get("usage", {}),
+                    "evaluation": None,
+                    "_eval_input": None
+                }
+            
+            # 添加响应并触发 UI 回调（不同于并行执行器的内部进度回调）
+            case_results[case_id]["responses"].append(response_data)
+            if progress_callback:
+                progress_callback()
+        
+        # 返回结果列表，按原始用例索引排序
+        sorted_results = []
+        for case_idx, case in enumerate(test_set.get("cases", [])):
+            case_id = case.get("id", "")
+            if case_id in case_results:
+                sorted_results.append(case_results[case_id])
+        
+        return sorted_results
+            
+    # 创建新的事件循环执行测试
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    all_case_results = loop.run_until_complete(run_all_cases())
-    # 并发批量评估（只对有内容的响应）
+    all_case_results = loop.run_until_complete(run_all_tests())
+    
+    # 处理评估：收集需要评估的响应
     eval_inputs = []
     eval_response_refs = []
     for case in all_case_results:
@@ -351,9 +382,11 @@ def run_test(template, model, test_set, model_provider=None, repeat_count=1, tem
             if resp.get("_eval_input"):
                 eval_inputs.append(resp["_eval_input"])
                 eval_response_refs.append(resp)
+    
+    # 并行执行评估
     if eval_inputs:
         evaluator = PromptEvaluator()
-        # 修改：传递一个包含所有评估所需信息的任务列表
+        # 传递包含所有评估所需信息的任务列表
         eval_results = evaluator.run_evaluation(
             evaluation_tasks=[{
                 "model_response": item["response_text"], # 传递实际的模型响应
@@ -362,27 +395,17 @@ def run_test(template, model, test_set, model_provider=None, repeat_count=1, tem
                 "prompt": item["prompt"] # 传递对应的提示词
             } for item in eval_inputs]
         )
-        # This zip assumes the order of eval_results matches eval_response_refs
+        # 更新评估结果
         for resp, eval_result in zip(eval_response_refs, eval_results):
             resp["evaluation"] = eval_result
-            del resp["_eval_input"] # Clean up temporary data
+            del resp["_eval_input"] # 清理临时数据
+    
     results["test_cases"] = all_case_results
     loop.close()
     return results
 
 def regenerate_expected_output(case: dict, template: dict, model: str, provider: str = None, temperature: float = 0.7):
-    """使用AI重新生成期望输出
-    
-    Args:
-        case (dict): 测试用例
-        template (dict): 提示词模板
-        model (str): 模型名称
-        provider (str, optional): 模型提供商. Defaults to None (将从模型名称推断).
-        temperature (float, optional): 温度参数. Defaults to 0.7.
-        
-    Returns:
-        dict: 包含生成结果或错误信息的字典
-    """
+    """使用AI重新生成期望输出，使用并行执行器"""
     try:
         # 如果未指定提供商，从模型名称推断
         if not provider:
@@ -402,9 +425,6 @@ def regenerate_expected_output(case: dict, template: dict, model: str, provider:
                 if not found:
                     return {"error": f"无法确定模型 '{model}' 的提供商"}
         
-        # 获取API客户端
-        client = get_client(provider)
-        
         # 获取测试用例输入
         user_input = case.get("user_input", "")
         if not user_input:
@@ -418,82 +438,36 @@ def regenerate_expected_output(case: dict, template: dict, model: str, provider:
         # 参数设置
         params = {"temperature": temperature, "max_tokens": 1000}
         
-        # 同步调用模型API
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        # 使用并行执行器的同步方法
+        if provider in ["openai", "xai"]:
+            messages = [
+                {"role": "system", "content": prompt_template},
+                {"role": "user", "content": user_input}
+            ]
+            response = execute_model_sync(model, messages=messages, provider=provider, params=params)
+        else:
+            combined_prompt = f"System: {prompt_template}\n\nUser: {user_input}"
+            response = execute_model_sync(model, prompt=combined_prompt, provider=provider, params=params)
         
-        # 根据不同客户端类型构建不同的消息格式
-        try:
-            if provider in ["openai", "xai"]:
-                response = loop.run_until_complete(client.generate_with_messages(
-                    [
-                        {"role": "system", "content": prompt_template},
-                        {"role": "user", "content": user_input}
-                    ],
-                    model, 
-                    params
-                ))
-            else:
-                # 对于其他API客户端
-                combined_prompt = f"System: {prompt_template}\n\nUser: {user_input}"
-                response = loop.run_until_complete(client.generate(
-                    combined_prompt, 
-                    model, 
-                    params
-                ))
-                
-            loop.close()
+        if "error" in response:
+            return {"error": response["error"]}
+        
+        # 返回生成的文本
+        return {
+            "text": response.get("text", ""),
+            "usage": response.get("usage", {})
+        }
             
-            if "error" in response:
-                return {"error": response["error"]}
-            
-            # 返回生成的文本
-            return {
-                "text": response.get("text", ""),
-                "usage": response.get("usage", {})
-            }
-            
-        except Exception as e:
-            return {"error": str(e)}
-        finally:
-            if loop and not loop.is_closed():
-                loop.close()
-    
     except Exception as e:
         return {"error": f"生成期望输出时发生错误: {str(e)}"}
 
-def display_template_info(template, show_token_count=True, inside_expander=False):
-    """显示提示词模板信息"""
-    st.info(f"**名称**: {template.get('name', '未命名')}")
-    st.markdown(f"**描述**: {template.get('description', '无描述')}")
-    
-    if inside_expander:
-        # 如果已经在expander内，不使用嵌套expander
-        st.markdown("**提示词内容:**")
-        st.code(template.get("template", ""))
-        
-        if show_token_count:
-            token_count = count_tokens(template.get("template", ""))
-            st.caption(f"Token数: {token_count}")
-    else:
-        # 正常使用expander
-        with st.expander("查看提示词内容"):
-            st.code(template.get("template", ""))
-            
-            if show_token_count:
-                token_count = count_tokens(template.get("template", ""))
-                st.caption(f"Token数: {token_count}")
-
 def generate_evaluation_criteria(case_description, user_input, expected_output):
-    """使用AI生成测试用例的评估标准"""
+    """使用AI生成测试用例的评估标准，使用并行执行器"""
     try:
         # 获取配置的评估模型
         config = load_config()
         evaluator_model = config.get("evaluator_model", "gpt-4")
         provider = get_provider_from_model(evaluator_model)
-        
-        # 获取API客户端
-        client = get_client(provider)
         
         # 获取系统模板
         from config import get_system_template
@@ -511,8 +485,13 @@ def generate_evaluation_criteria(case_description, user_input, expected_output):
             "max_tokens": 1000
         }
         
-        # 同步调用模型API
-        result = client.generate_sync(criteria_generation_prompt, evaluator_model, params)
+        # 使用并行执行器的同步方法
+        result = execute_model_sync(
+            evaluator_model, 
+            prompt=criteria_generation_prompt,
+            provider=provider, 
+            params=params
+        )
         
         if "error" in result:
             return {

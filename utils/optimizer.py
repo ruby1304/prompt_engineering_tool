@@ -1,9 +1,13 @@
 import json
 import asyncio
+import concurrent.futures
+import threading
 from typing import Dict, List, Optional, Any, Tuple
 
 from models.api_clients import get_client, get_provider_from_model
 from config import load_config, get_system_template
+# 导入新的并行执行器
+from utils.parallel_executor import execute_model, execute_models, execute_model_sync, execute_models_sync
 
 class PromptOptimizer:
     """提示词自动优化器"""
@@ -19,15 +23,19 @@ class PromptOptimizer:
     
     async def optimize_prompt(self, original_prompt: str, test_results: List[Dict], optimization_strategy: str = "balanced") -> Dict:
         """基于测试结果优化提示词"""
+        # 输出调试信息，检查传入的测试结果数量
+        print(f"[调试-优化器] 收到 {len(test_results)} 条评估结果")
+        
         # 使用LLM分析评估结果，提取关键问题
         problem_analysis = await self.analyze_evaluation_problems_with_llm(test_results)
         if "error" in problem_analysis:
+            print(f"[错误-优化器] 分析问题出错: {problem_analysis['error']}")
             return problem_analysis  # 返回分析错误
         
         # 构建更详细的优化指导
         optimization_guidance = self.build_optimization_guidance(problem_analysis["analysis"], optimization_strategy)
         
-        # 将测试结果格式化为摘要 (复用之前的逻辑，或者可以简化)
+        # 将测试结果格式化为摘要
         results_summary = self.format_test_results_summary(test_results)
         
         # 使用系统模板而不是硬编码的提示词
@@ -38,14 +46,24 @@ class PromptOptimizer:
             .replace("{{problem_analysis}}", problem_analysis["analysis"])\
             .replace("{{optimization_guidance}}", optimization_guidance)
         
+        print(f"[调试-优化器] 已准备优化提示词，长度: {len(optimization_prompt)} 字符")
+        
         optimization_params = {
-            "temperature": 0.7,  # 适当提高温度以获得更多样化的优化结果
+            "temperature": 0.8,  # 增加温度以确保更多样化的优化结果
             "max_tokens": 4000
         }
         
         try:
-            result = await self.client.generate(optimization_prompt, self.optimizer_model, optimization_params)
+            # 使用新的并行执行器
+            result = await execute_model(
+                self.optimizer_model,
+                prompt=optimization_prompt,
+                provider=self.provider,
+                params=optimization_params
+            )
+            
             opt_text = result.get("text", "")
+            print(f"[调试-优化器] 收到优化响应，长度: {len(opt_text)} 字符")
             
             # 尝试解析JSON结果
             try:
@@ -55,31 +73,102 @@ class PromptOptimizer:
                 elif "```" in opt_text:
                     opt_text = opt_text.split("```")[1].split("```")[0].strip()
                 
-                return json.loads(opt_text)
-            except json.JSONDecodeError:
-                # 解析失败，返回错误信息
+                parsed_result = json.loads(opt_text)
+                
+                # 检查结果是否包含优化提示词数组
+                if "optimized_prompts" in parsed_result and isinstance(parsed_result["optimized_prompts"], list):
+                    optimized_prompts = parsed_result["optimized_prompts"]
+                    print(f"[调试-优化器] 成功解析 {len(optimized_prompts)} 个优化提示词")
+                    
+                    # 确保至少有一个包含有效提示词的版本
+                    valid_prompts = [p for p in optimized_prompts if p.get("prompt")]
+                    if not valid_prompts:
+                        print("[警告-优化器] 解析出的优化提示词列表中没有有效的提示词")
+                        # 添加一个默认的优化版本
+                        optimized_prompts.append({
+                            "strategy": "默认微调优化",
+                            "problem_addressed": "提示词可能需要整体改进",
+                            "expected_improvements": "提高整体响应质量",
+                            "prompt": original_prompt + "\n\n请确保你的回答准确、全面、简洁，并满足用户的所有要求。"
+                        })
+                        print("[调试-优化器] 已添加一个默认的优化版本")
+                    
+                    return parsed_result
+                else:
+                    print("[错误-优化器] 返回的JSON中没有optimized_prompts字段或格式不正确")
+                    return {
+                        "error": "优化结果格式错误，缺少optimized_prompts字段",
+                        "raw_response": opt_text,
+                        "optimized_prompts": [{
+                            "strategy": "默认优化",
+                            "problem_addressed": "无法从API获取有效的优化结果",
+                            "expected_improvements": "确保至少有一个可用的优化版本",
+                            "prompt": original_prompt + "\n\n请提供更详细、准确、结构化的回答，并确保解决用户的所有问题要点。"
+                        }]
+                    }
+            except json.JSONDecodeError as e:
+                print(f"[错误-优化器] JSON解析失败: {e}")
+                # 即使解析失败也返回至少一个优化版本
                 return {
-                    "error": "优化结果格式错误，无法解析为JSON",
-                    "raw_response": opt_text
+                    "error": f"优化结果格式错误，无法解析为JSON: {str(e)}",
+                    "raw_response": opt_text,
+                    "optimized_prompts": [{
+                        "strategy": "默认优化",
+                        "problem_addressed": "无法解析API返回的优化结果",
+                        "expected_improvements": "提供至少一个可用的优化版本",
+                        "prompt": original_prompt + "\n\n请确保回答详细、准确、有条理，并解决用户的全部需求。"
+                    }]
                 }
         except Exception as e:
+            print(f"[严重错误-优化器] 优化过程出现异常: {e}")
+            # 返回错误信息，但也提供一个默认的优化版本
             return {
-                "error": f"优化过程出错: {str(e)}"
+                "error": f"优化过程出错: {str(e)}",
+                "optimized_prompts": [{
+                    "strategy": "故障保护优化",
+                    "problem_addressed": "API调用失败",
+                    "expected_improvements": "确保有一个可用的优化版本",
+                    "prompt": original_prompt + "\n\n请提供详尽、准确、有结构的回答，并确保完整解决用户的问题。"
+                }]
             }
-            
+        
     def optimize_prompt_sync(self, original_prompt: str, test_results: List[Dict], optimization_strategy: str = "balanced") -> Dict:
         """同步版本的优化函数（包装异步函数）"""
+        print(f"[调试-优化器-同步] 开始优化提示词，策略: {optimization_strategy}")
+        
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
             result = loop.run_until_complete(self.optimize_prompt(
                 original_prompt, test_results, optimization_strategy
             ))
+            
+            # 检查结果是否有效
+            if "optimized_prompts" not in result or not result["optimized_prompts"]:
+                print("[警告-优化器-同步] 没有生成优化提示词，添加默认版本")
+                result["optimized_prompts"] = [{
+                    "strategy": "默认优化策略",
+                    "problem_addressed": "原始提示词可能存在不足",
+                    "expected_improvements": "提高整体响应质量",
+                    "prompt": original_prompt + "\n\n请确保你的回答详尽、准确、清晰，并完全满足用户的需求。"
+                }]
+            
+            print(f"[调试-优化器-同步] 优化完成，生成了 {len(result.get('optimized_prompts', []))} 个优化版本")
             return result
         except Exception as e:
+            print(f"[严重错误-优化器-同步] 同步优化过程出现异常: {e}")
             import traceback
             traceback.print_exc()
-            return {"error": f"优化过程出错: {str(e)}"}
+            # 即使出错也返回至少一个优化版本
+            return {
+                "error": f"优化过程出错: {str(e)}",
+                "optimized_prompts": [{
+                    "strategy": "故障恢复优化",
+                    "problem_addressed": "同步优化过程失败",
+                    "expected_improvements": "确保至少有一个优化版本可用",
+                    "prompt": original_prompt + "\n\n请确保你的回答全面、准确、简洁，并完全解决用户提出的问题。"
+                }]
+            }
         finally:
             loop.close()
 
@@ -109,7 +198,14 @@ class PromptOptimizer:
             .replace("{{constraints}}", constraints or "无")
         params = {"temperature": 0.8, "max_tokens": 2000}
         try:
-            result = await self.client.generate(optimization_prompt, self.optimizer_model, params)
+            # 使用新的并行执行器
+            result = await execute_model(
+                self.optimizer_model,
+                prompt=optimization_prompt,
+                provider=self.provider,
+                params=params
+            )
+            
             opt_text = result.get("text", "")
             try:
                 if "```json" in opt_text:
@@ -140,7 +236,14 @@ class PromptOptimizer:
         }
         
         try:
-            result = await self.client.generate(analysis_prompt, self.optimizer_model, analysis_params)
+            # 使用新的并行执行器
+            result = await execute_model(
+                self.optimizer_model,
+                prompt=analysis_prompt,
+                provider=self.provider,
+                params=analysis_params
+            )
+            
             analysis_text = result.get("text", "").strip()
             if not analysis_text:
                 return {"error": "LLM未能生成问题分析"}
@@ -244,128 +347,284 @@ class PromptOptimizer:
     ) -> Dict:
         """
         自动多轮提示词优化主流程（同步）。
-        参数：
-            initial_prompt: 初始提示词内容
-            test_set: 测试用例列表
-            evaluator: 评估器实例（需有run_evaluation方法）
-            optimization_strategy: 优化策略
-            model/provider: 用于评估的模型及提供商
-            max_iterations: 迭代次数
-            progress_callback: 进度回调（可选）
-        返回：
-            {
-                'best_prompt': 最优提示词内容,
-                'best_score': 最优分数,
-                'history': 每轮优化与评估详情
-            }
+        支持并行生成和评估，并在每步调用进度回调。
         """
+        print(f"[调试] 开始迭代优化，计划执行 {max_iterations} 轮迭代")
         current_prompt = initial_prompt
         best_prompt = initial_prompt
         best_score = -float('inf')
         history = []
-        for i in range(max_iterations):
-            # 创建评估任务列表
-            evaluation_tasks = []
-            for test_case in test_set:
-                user_input = test_case.get("user_input", "")
-                expected_output = test_case.get("expected_output", "")
-                criteria = test_case.get("criteria", {})
-                # 准备模型调用
-                client = get_client(provider) if provider else None
-                if not client:
-                    continue
-                # 生成响应
-                try:
-                    response = client.generate_sync(
-                        current_prompt + "\n\n" + user_input,
-                        model,
-                        {"temperature": 0.7, "max_tokens": 2000}
-                    )
-                    model_response = response.get("text", "")
-                    # 创建评估任务
-                    evaluation_tasks.append({
-                        "model_response": model_response,
-                        "expected_output": expected_output,
-                        "criteria": criteria,
-                        "prompt": current_prompt
-                    })
-                except Exception as e:
-                    print(f"Error generating response: {e}")
-                    continue
-            
-            # 执行评估
-            eval_results = evaluator.run_evaluation(evaluation_tasks)
-            avg_score = self._calc_avg_score(eval_results)
-            history.append({
-                'iteration': i+1,
-                'prompt': current_prompt,
-                'eval_results': eval_results,
-                'avg_score': avg_score
-            })
-            if avg_score > best_score:
-                best_score = avg_score
-                best_prompt = current_prompt
-            if progress_callback:
-                progress_callback(i+1, max_iterations, avg_score)
-            opt_result = self.optimize_prompt_sync(
-                current_prompt, eval_results, optimization_strategy
-            )
-            optimized_prompts = opt_result.get('optimized_prompts', [])
-            if not optimized_prompts:
-                break
-            best_opt_prompt = current_prompt
-            best_opt_score = avg_score
-            for opt in optimized_prompts:
-                opt_prompt = opt.get('prompt', '')
-                # 创建评估任务列表
-                opt_evaluation_tasks = []
-                for test_case in test_set:
+        total_cases = len(test_set)
+        total_eval_per_iter = total_cases
+        
+        # 创建一个事件循环，用于整个优化过程
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            for i in range(max_iterations):
+                print(f"[调试] 开始第 {i+1}/{max_iterations} 轮迭代")
+                # 准备迭代的请求
+                requests = []
+                for idx, test_case in enumerate(test_set):
                     user_input = test_case.get("user_input", "")
                     expected_output = test_case.get("expected_output", "")
-                    criteria = test_case.get("criteria", {})
-                    # 准备模型调用
-                    client = get_client(provider) if provider else None
-                    if not client:
-                        continue
-                    # 生成响应
-                    try:
-                        response = client.generate_sync(
-                            opt_prompt + "\n\n" + user_input,
-                            model,
-                            {"temperature": 0.7, "max_tokens": 2000}
-                        )
-                        model_response = response.get("text", "")
-                        # 创建评估任务
-                        opt_evaluation_tasks.append({
-                            "model_response": model_response,
+                    criteria = test_case.get("evaluation_criteria", {})
+                    
+                    # 准备请求
+                    request = {
+                        "model": model,
+                        "provider": provider,
+                        "prompt": current_prompt + "\n\n" + user_input,
+                        "params": {
+                            "temperature": 0.7,
+                            "max_tokens": 2000
+                        },
+                        "context": {
                             "expected_output": expected_output,
                             "criteria": criteria,
-                            "prompt": opt_prompt
-                        })
-                    except Exception as e:
-                        print(f"Error generating response: {e}")
-                        continue
+                            "prompt": current_prompt,
+                            "idx": idx
+                        }
+                    }
+                    requests.append(request)
                 
-                opt_eval_results = evaluator.run_evaluation(opt_evaluation_tasks)
-                opt_avg_score = self._calc_avg_score(opt_eval_results)
+                # 使用并行执行器批量处理请求
+                print(f"[调试] 第 {i+1} 轮发送 {len(requests)} 个请求进行评估")
+                responses = execute_models_sync(requests)
+                
+                # 处理模型响应
+                evaluation_tasks = []
+                for response in responses:
+                    context = response.get("context", {})
+                    idx = context.get("idx", -1)
+                    
+                    if not response.get("error") and response.get("text"):
+                        evaluation_tasks.append({
+                            "model_response": response.get("text", ""),
+                            "expected_output": context.get("expected_output", ""),
+                            "criteria": context.get("criteria", {}),
+                            "prompt": context.get("prompt", ""),
+                            "idx": idx
+                        })
+                    
+                    # 更新进度
+                    if progress_callback:
+                        progress_callback(
+                            i+1, max_iterations, idx+1, total_eval_per_iter,
+                            i*total_eval_per_iter + idx+1, max_iterations*total_eval_per_iter,
+                            stage="gen"
+                        )
+                
+                # 批量评估所有响应，而不是一个一个评估
+                eval_results = []
+                if evaluation_tasks:
+                    # 使用事件循环的run_until_complete方法运行异步的批量评估
+                    try:
+                        # 使用单一批处理而不是多次调用
+                        print(f"[调试] 第 {i+1} 轮评估 {len(evaluation_tasks)} 个响应")
+                        eval_results = loop.run_until_complete(evaluator.run_evaluation_async(evaluation_tasks))
+                        
+                        # 更新进度 - 一次性更新所有评估的进度
+                        if progress_callback:
+                            for idx in range(len(evaluation_tasks)):
+                                progress_callback(
+                                    i+1, max_iterations, idx+1, len(evaluation_tasks),
+                                    i*total_eval_per_iter + idx+1, max_iterations*total_eval_per_iter,
+                                    stage="eval"
+                                )
+                    except Exception as e:
+                        print(f"[批量评估错误]: {e}")
+                
+                # 计算平均分数
+                avg_score = self._calc_avg_score(eval_results)
+                print(f"[调试] 第 {i+1} 轮当前提示词评估完成，平均分: {avg_score:.2f}")
+                
+                # 记录本轮结果
                 history.append({
                     'iteration': i+1,
-                    'prompt': opt_prompt,
-                    'eval_results': opt_eval_results,
-                    'avg_score': opt_avg_score
+                    'stage': 'initial',  # 标记为初始提示词
+                    'prompt': current_prompt,
+                    'eval_results': eval_results,
+                    'avg_score': avg_score
                 })
-                if opt_avg_score > best_opt_score:
-                    best_opt_score = opt_avg_score
-                    best_opt_prompt = opt_prompt
-            current_prompt = best_opt_prompt
-            if best_opt_score > best_score:
-                best_score = best_opt_score
-                best_prompt = best_opt_prompt
-        return {
-            'best_prompt': best_prompt,
-            'best_score': best_score,
-            'history': history
-        }
+                
+                # 更新最佳结果
+                if avg_score > best_score:
+                    best_score = avg_score
+                    best_prompt = current_prompt
+                
+                # 更新进度
+                if progress_callback:
+                    progress_callback(
+                        i+1, max_iterations, total_eval_per_iter, total_eval_per_iter,
+                        (i+1)*total_eval_per_iter, max_iterations*total_eval_per_iter, 
+                        stage="eval_done", avg_score=avg_score
+                    )
+                
+                # 如果是最后一轮迭代，可以跳过生成优化提示词的步骤
+                if i == max_iterations - 1:
+                    print(f"[调试] 这是最后一轮迭代 ({i+1}/{max_iterations})，跳过优化步骤")
+                    break
+                    
+                # 进行优化
+                print(f"[调试] 第 {i+1} 轮开始优化提示词")
+                opt_result = self.optimize_prompt_sync(
+                    current_prompt, eval_results, optimization_strategy
+                )
+                
+                # 处理优化结果
+                optimized_prompts = opt_result.get('optimized_prompts', [])
+                print(f"[调试] 第 {i+1} 轮生成了 {len(optimized_prompts)} 个优化版本")
+                
+                # 如果没有生成优化提示词，继续使用当前提示词进行下一轮迭代
+                if not optimized_prompts:
+                    print(f"[警告] 第 {i+1} 轮未能生成优化版本，使用当前提示词继续")
+                    continue
+                    
+                # 对优化后的提示词进行评估
+                best_opt_prompt = current_prompt
+                best_opt_score = avg_score
+                
+                # 为每个优化版本创建记录
+                all_opt_versions = []
+                
+                for opt_idx, opt in enumerate(optimized_prompts):
+                    opt_prompt = opt.get('prompt', '')
+                    opt_strategy = opt.get('strategy', '')
+                    
+                    print(f"[调试] 第 {i+1} 轮评估优化版本 {opt_idx+1}: {opt_strategy}")
+                    
+                    # 准备优化提示词的评估请求
+                    opt_requests = []
+                    for idx, test_case in enumerate(test_set):
+                        user_input = test_case.get("user_input", "")
+                        expected_output = test_case.get("expected_output", "")
+                        criteria = test_case.get("evaluation_criteria", {})
+                        
+                        # 准备请求
+                        request = {
+                            "model": model,
+                            "provider": provider,
+                            "prompt": opt_prompt + "\n\n" + user_input,
+                            "params": {
+                                "temperature": 0.7,
+                                "max_tokens": 2000
+                            },
+                            "context": {
+                                "expected_output": expected_output,
+                                "criteria": criteria,
+                                "prompt": opt_prompt,
+                                "idx": idx
+                            }
+                        }
+                        opt_requests.append(request)
+                    
+                    # 使用并行执行器批量处理优化提示词的请求
+                    opt_responses = execute_models_sync(opt_requests)
+                    
+                    # 处理优化提示词的响应
+                    opt_evaluation_tasks = []
+                    for opt_response in opt_responses:
+                        context = opt_response.get("context", {})
+                        idx = context.get("idx", -1)
+                        
+                        if not opt_response.get("error") and opt_response.get("text"):
+                            opt_evaluation_tasks.append({
+                                "model_response": opt_response.get("text", ""),
+                                "expected_output": context.get("expected_output", ""),
+                                "criteria": context.get("criteria", {}),
+                                "prompt": context.get("prompt", ""),
+                                "idx": idx
+                            })
+                        
+                        # 更新进度
+                        if progress_callback:
+                            progress_callback(
+                                i+1, max_iterations, idx+1, total_eval_per_iter,
+                                i*total_eval_per_iter + idx+1, max_iterations*total_eval_per_iter,
+                                stage="opt_gen"
+                            )
+                    
+                    # 评估优化提示词的响应 - 同样使用批处理方式
+                    opt_eval_results = []
+                    if opt_evaluation_tasks:
+                        try:
+                            # 使用单一批处理方式进行评估
+                            opt_eval_results = loop.run_until_complete(evaluator.run_evaluation_async(opt_evaluation_tasks))
+                            
+                            # 更新进度 - 一次性更新所有评估的进度
+                            if progress_callback:
+                                for idx in range(len(opt_evaluation_tasks)):
+                                    progress_callback(
+                                        i+1, max_iterations, idx+1, len(opt_evaluation_tasks),
+                                        i*total_eval_per_iter + idx+1, max_iterations*total_eval_per_iter,
+                                        stage="opt_eval"
+                                    )
+                        except Exception as e:
+                            print(f"[优化提示词批量评估错误]: {e}")
+                    
+                    # 计算优化提示词的平均分数
+                    opt_avg_score = self._calc_avg_score(opt_eval_results)
+                    print(f"[调试] 第 {i+1} 轮优化版本 {opt_idx+1} 评分: {opt_avg_score:.2f}")
+                    
+                    # 记录优化提示词的结果，添加策略信息
+                    opt_version = {
+                        'iteration': i+1,
+                        'stage': 'optimized',  # 标记为优化版本
+                        'version': opt_idx + 1,  # 版本号
+                        'prompt': opt_prompt,
+                        'strategy': opt_strategy,
+                        'eval_results': opt_eval_results,
+                        'avg_score': opt_avg_score,
+                        'is_best': False  # 初始化为非最佳版本
+                    }
+                    
+                    all_opt_versions.append(opt_version)
+                    history.append(opt_version)
+                    
+                    # 更新最佳优化提示词
+                    if opt_avg_score > best_opt_score:
+                        best_opt_score = opt_avg_score
+                        best_opt_prompt = opt_prompt
+                
+                # 使用最佳优化提示词继续迭代
+                current_prompt = best_opt_prompt
+                
+                # 更新全局最佳结果
+                if best_opt_score > best_score:
+                    best_score = best_opt_score
+                    best_prompt = best_opt_prompt
+                
+                # 标记最佳版本
+                for version in all_opt_versions:
+                    if version['prompt'] == best_opt_prompt:
+                        version['is_best'] = True
+                        print(f"[调试] 第 {i+1} 轮选择版本 {version.get('version')} 作为最佳版本，分数: {version.get('avg_score'):.2f}")
+            
+            # 返回优化结果
+            print(f"[调试] 迭代优化完成，共记录 {len(history)} 条历史记录")
+            for i, item in enumerate(history):
+                print(f"[调试] 历史记录 #{i+1}: 轮次={item.get('iteration')}, 阶段={item.get('stage')}, 版本={item.get('version', '-')}, 分数={item.get('avg_score'):.2f}")
+                
+            return {
+                'best_prompt': best_prompt,
+                'best_score': best_score,
+                'history': history
+            }
+        except Exception as e:
+            print(f"[严重错误] 迭代优化过程中出现异常: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                'error': f"迭代优化失败: {str(e)}",
+                'best_prompt': best_prompt,
+                'best_score': best_score,
+                'history': history  # 返回已有的历史记录
+            }
+        finally:
+            # 确保事件循环在整个过程完成后关闭
+            loop.close()
 
     def _calc_avg_score(self, eval_results: List[Dict]) -> float:
         """计算评估结果的平均分"""

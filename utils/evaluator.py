@@ -4,6 +4,8 @@ from typing import Dict, List, Optional, Any
 from models.api_clients import get_client, get_provider_from_model
 from config import load_config, get_api_key, get_system_template
 from models.token_counter import count_tokens
+# Import the new parallel executor
+from utils.parallel_executor import execute_model, execute_models, execute_model_sync, execute_models_sync
 
 class PromptEvaluator:
     """提示词评估引擎"""
@@ -50,7 +52,14 @@ class PromptEvaluator:
         }
         
         try:
-            result = await self.client.generate(evaluation_prompt, self.evaluator_model, evaluation_params)
+            # 使用并行执行器进行模型调用
+            result = await execute_model(
+                self.evaluator_model,
+                prompt=evaluation_prompt,
+                provider=self.provider,
+                params=evaluation_params
+            )
+            
             eval_text = result.get("text", "")
             
             # 尝试解析JSON结果
@@ -115,11 +124,12 @@ class PromptEvaluator:
             log_message(f"评估请求 - 模型响应长度: {len(model_response)}, 期望输出长度: {len(expected_output)}")
             log_message(f"评估标准: {criteria}")
             
-            # 在Streamlit环境中，使用更安全的方法运行异步函数
+            # 使用更安全的方法执行评估
             try:
                 start_time = time.time()
-                # 直接运行异步评估函数，不创建新的事件循环
-                result = self._run_async_evaluation(model_response, expected_output, criteria, prompt)
+                
+                # 使用并行执行器的同步版本
+                result = self._run_async_evaluation_sync(model_response, expected_output, criteria, prompt)
                 end_time = time.time()
                 
                 # 记录评估结果
@@ -146,9 +156,9 @@ class PromptEvaluator:
             local_result = self.perform_basic_evaluation(model_response, expected_output)
             local_result["error"] = f"评估过程出错，已切换到本地评估: {str(e)}"
             return local_result
-            
-    def _run_async_evaluation(self, model_response, expected_output, criteria, prompt):
-        """以同步方式运行异步评估函数，适合在Streamlit环境使用"""
+    
+    def _run_async_evaluation_sync(self, model_response, expected_output, criteria, prompt):
+        """使用并行执行器的同步版本执行评估"""
         # 构建评估提示词
         prompt_tokens = count_tokens(prompt)
         
@@ -166,8 +176,14 @@ class PromptEvaluator:
         }
         
         try:
-            # 使用同步方式调用API客户端
-            result = self.client.generate_sync(evaluation_prompt, self.evaluator_model, evaluation_params)
+            # 使用并行执行器的同步版本
+            result = execute_model_sync(
+                self.evaluator_model,
+                prompt=evaluation_prompt,
+                provider=self.provider,
+                params=evaluation_params
+            )
+            
             eval_text = result.get("text", "")
             
             # 尝试解析JSON结果
@@ -247,18 +263,11 @@ class PromptEvaluator:
                 "is_local_evaluation": True
             }
 
-    def generate_test_cases(self, model: str, test_purpose: str, example_case: Dict, target_count: int = None) -> Dict:
-        """生成新的测试用例，支持自动补足数量
-        Args:
-            model: 模型名称
-            test_purpose: 测试目的
-            example_case: 示例测试用例，需要包含id, description, user_input, expected_output, evaluation
-            target_count: 期望生成的测试用例数量（可选）
-        Returns:
-            Dict: 生成的测试用例或错误信息
-        """
+    async def generate_test_cases_async(self, model: str, test_purpose: str, example_case: Dict, target_count: int = None, progress_callback=None) -> Dict:
+        """异步生成测试用例"""
         if self.use_local_evaluation:
             return {"error": "本地评估模式不支持生成测试用例，请配置评估模型API密钥"}
+
         # 构建示例测试用例的文本表示
         example_evaluation = example_case.get("evaluation", {})
         scores = example_evaluation.get("scores", {})
@@ -270,27 +279,38 @@ class PromptEvaluator:
 用户输入: \"{example_case.get('user_input', '')}\"
 期望输出: \"{example_case.get('expected_output', '')}\"
 评估结果: {scores_text.rstrip(', ')}"""
+
         # 打印调用模型的日志到console
-        print(f"[TestCaseGen] 使用模型: {self.evaluator_model}, 提供商: {self.provider}, 测试用例ID: {example_case.get('id', 'test-1')}, 提示词模版: testcase_generator")
+        print(f"[TestCaseGen] 使用模型: {model}, 提供商: {self.provider}, 测试用例ID: {example_case.get('id', 'example_case')}, 目标数量: {target_count}, 提示词模版: testcase_generator")
+        
         # 自动补足逻辑
         all_cases = []
-        max_try = 10  # 最多尝试10次，防止死循环
+        max_try = 50 if target_count and target_count > 30 else 10
+        batch_size = 3  # 每次并行生成的批次数
         tried = 0
-        while True:
+        
+        # 如果有进度回调，初始化进度
+        if progress_callback:
+            progress_callback(0, target_count if target_count else 10)
+        
+        async def generate_batch(batch_count):
+            """并行生成一批测试用例"""
             # 动态调整test_purpose中的数量描述
             if target_count:
                 left = target_count - len(all_cases)
                 if left <= 0:
-                    break
-                purpose = test_purpose
+                    return []
+                # 每个请求生成一个测试用例
                 import re
-                # 用正确的正则替换“请生成N个”部分
-                purpose, n_sub = re.subn(r"请生成\d+个", f"请生成{left}个", purpose)
+                purpose = test_purpose
+                # 用正确的正则替换"请生成N个"部分
+                purpose, n_sub = re.subn(r"请生成\d+个", f"请生成{batch_count}个", purpose)
                 if n_sub == 0:
                     # 如果原本没有数量描述，直接加
-                    purpose = f"{purpose}，请生成{left}个高质量测试用例，覆盖不同场景和边界。"
+                    purpose = f"{purpose}，请生成{batch_count}个高质量测试用例，覆盖不同场景和边界。"
             else:
                 purpose = test_purpose
+                
             # 构建生成prompt
             template = self.testcase_generator_template.get("template", "")
             generator_prompt = template\
@@ -301,8 +321,15 @@ class PromptEvaluator:
                 "temperature": 0.7,
                 "max_tokens": 2000
             }
+            
             try:
-                result = self.client.generate_sync(generator_prompt, self.evaluator_model, generator_params)
+                # 使用并行执行器
+                result = await execute_model(
+                    self.evaluator_model,
+                    prompt=generator_prompt,
+                    provider=self.provider,
+                    params=generator_params
+                )
                 response_text = result.get("text", "")
                 # 尝试解析JSON结果
                 try:
@@ -312,80 +339,229 @@ class PromptEvaluator:
                         response_text = response_text.split("```", 1)[1].split("```", 1)[0].strip()
                     test_cases_data = json.loads(response_text)
                     cases = test_cases_data.get("test_cases", []) if isinstance(test_cases_data, dict) else test_cases_data
-                    # 去重（按user_input+expected_output）
-                    exist_keys = set((c.get("user_input", "")+"|||"+c.get("expected_output", "")) for c in all_cases)
-                    for c in cases:
-                        key = c.get("user_input", "")+"|||"+c.get("expected_output", "")
-                        if key not in exist_keys:
-                            all_cases.append(c)
-                            exist_keys.add(key)
-                    if not target_count:
-                        break  # 只调用一次
+                    return cases
                 except json.JSONDecodeError:
-                    return {
-                        "error": "测试用例生成结果格式错误",
-                        "raw_response": response_text
-                    }
+                    print(f"[TestCaseGen] 错误: 无法解析JSON响应")
+                    return []
             except Exception as e:
-                return {
-                    "error": f"生成测试用例时出错: {str(e)}"
-                }
+                print(f"[TestCaseGen] 错误: {str(e)}")
+                return []
+        
+        while True:
+            # 准备批量请求
+            batch_requests = []
+            for _ in range(batch_size):
+                if target_count and len(all_cases) >= target_count:
+                    break
+                batch_requests.append(generate_batch(1))  # 每次生成1个测试用例
+            
+            if not batch_requests:
+                break
+                
+            # 并行执行所有批次
+            batch_results = await asyncio.gather(*batch_requests)
+            
+            # 处理结果
+            added_count = 0
+            exist_keys = set((c.get("user_input", "")+"|||"+c.get("expected_output", "")) for c in all_cases)
+            
+            for batch_cases in batch_results:
+                for c in batch_cases:
+                    key = c.get("user_input", "")+"|||"+c.get("expected_output", "")
+                    if key not in exist_keys:
+                        # 确保有唯一ID
+                        if "id" not in c or not c["id"]:
+                            import time, uuid
+                            c["id"] = f"gen_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+                        # 确保有评估标准
+                        if "evaluation_criteria" not in c or not c["evaluation_criteria"]:
+                            c["evaluation_criteria"] = {
+                                "accuracy": "评估回答的准确性",
+                                "completeness": "评估回答的完整性",
+                                "relevance": "评估回答的相关性",
+                                "clarity": "评估回答的清晰度"
+                            }
+                        # 确保有变量字段
+                        if "variables" not in c:
+                            c["variables"] = {}
+                        
+                        all_cases.append(c)
+                        exist_keys.add(key)
+                        added_count += 1
+            
+            # 更新进度
+            if progress_callback and target_count:
+                progress_callback(len(all_cases), target_count)
+                
+            print(f"[TestCaseGen] 已生成 {len(all_cases)}/{target_count if target_count else '未指定'} 个测试用例，本批次新增: {added_count}")
+            
+            if not target_count:
+                break  # 只调用一次
+            if added_count == 0 and tried >= 3:
+                # 如果连续几次没有新增，可能已经生成不出更多不同的用例了
+                print(f"[TestCaseGen] 警告: 已连续多次无法生成新的独特测试用例，已生成 {len(all_cases)}/{target_count} 个")
+                break
+                
             tried += 1
             if tried >= max_try:
+                print(f"[TestCaseGen] 达到最大尝试次数 {max_try}，已生成 {len(all_cases)}/{target_count if target_count else '未指定'} 个测试用例")
                 break
+        
+        # 如果有进度回调，最后更新为100%
+        if progress_callback and target_count:
+            progress_callback(target_count, target_count)
+                
         # 返回结果
         return {"test_cases": all_cases[:target_count] if target_count else all_cases}
 
-    def generate_user_inputs(self, test_set_desc: str, count: int = 5) -> Dict:
-        """使用LLM生成一批高质量用户输入，仅返回用户输入列表"""
-        if self.use_local_evaluation:
-            return {"error": "本地评估模式不支持AI生成用户输入，请配置评估模型API密钥"}
-        prompt = f"""你是一位专业的AI测试用例设计专家。请根据以下测试集描述，生成{count}个高质量的用户输入，覆盖不同场景和边界条件。只需返回用户输入本身，不要包含期望输出或其他内容。请以JSON数组格式返回，例如：\n[\n  "用户输入1",\n  "用户输入2",\n  ...\n]。\n\n测试集描述：{test_set_desc}\n"""
-        params = {"temperature": 0.7, "max_tokens": 1000}
-        try:
-            result = self.client.generate_sync(prompt, self.evaluator_model, params)
-            response_text = result.get("text", "")
-            # 清理可能的前后缀文本
-            if "```json" in response_text:
-                response_text = response_text.split("```json")[1].split("```", 1)[0].strip()
-            elif "```" in response_text:
-                response_text = response_text.split("```", 1)[1].split("```", 1)[0].strip()
-            # 解析JSON
-            try:
-                user_inputs = json.loads(response_text)
-                if isinstance(user_inputs, list):
-                    # 只保留非空字符串
-                    user_inputs = [x for x in user_inputs if isinstance(x, str) and x.strip()]
-                    return {"user_inputs": user_inputs[:count]}
-                else:
-                    return {"error": "AI返回内容格式不正确", "raw_response": response_text}
-            except Exception:
-                return {"error": "无法解析AI返回的用户输入JSON", "raw_response": response_text}
-        except Exception as e:
-            return {"error": f"生成用户输入时出错: {str(e)}"}
-
-    async def run_evaluation_async(self, evaluation_tasks: List[Dict]) -> List[Dict]:
-        """批量并发评估测试用例，返回评估结果列表"""
+    def generate_test_cases(self, model: str, test_purpose: str, example_case: Dict, target_count: int = None, progress_callback=None) -> Dict:
+        """生成新的测试用例，支持自动补足数量
+        Args:
+            model: 模型名称
+            test_purpose: 测试目的
+            example_case: 示例测试用例，需要包含id, description, user_input, expected_output, evaluation
+            target_count: 期望生成的测试用例数量（可选）
+            progress_callback: 进度回调函数（可选）
+        Returns:
+            Dict: 生成的测试用例或错误信息
+        """
+        # 使用asyncio运行异步函数
         import asyncio
-        from config import get_concurrency_limit
-        concurrency_limit = get_concurrency_limit(self.provider, self.evaluator_model)
-        semaphore = asyncio.Semaphore(concurrency_limit)
+        try:
+            # 尝试获取当前事件循环
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            # 如果没有事件循环，创建一个新的
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
         
-        async def eval_one(task: Dict):
-            # 从任务字典中提取所需参数
-            model_response = task.get("model_response", "")
-            expected_output = task.get("expected_output", "")
-            criteria = task.get("criteria", {})
-            prompt = task.get("prompt", "") # 获取提示词
-            
-            async with semaphore:
-                # 调用单个评估函数
-                return await self.evaluate_response(model_response, expected_output, criteria, prompt)
+        try:
+            # 运行异步函数
+            return loop.run_until_complete(
+                self.generate_test_cases_async(model, test_purpose, example_case, target_count, progress_callback)
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"error": f"生成测试用例时出错: {str(e)}"}
 
-        # 为每个任务创建协程
-        tasks = [eval_one(task) for task in evaluation_tasks]
-        # 并发执行所有评估任务
-        return await asyncio.gather(*tasks)
+    async def generate_test_cases_batch_async(self, model: str, test_purposes: List[str], example_case: Dict, target_count_per_purpose: int = 3, progress_callback=None) -> Dict:
+        """异步批量生成多组测试用例
+        
+        Args:
+            model: 模型名称
+            test_purposes: 测试目的列表
+            example_case: 示例测试用例
+            target_count_per_purpose: 每个测试目的生成的用例数量
+            progress_callback: 进度回调函数（可选）
+            
+        Returns:
+            Dict: 包含多组测试用例的字典或错误信息
+        """
+        if self.use_local_evaluation:
+            return {"error": "本地评估模式不支持生成测试用例，请配置评估模型API密钥"}
+            
+        all_test_cases = []
+        errors = []
+        total_purposes = len(test_purposes)
+        total_expected_cases = total_purposes * target_count_per_purpose
+        
+        # 初始化进度
+        if progress_callback:
+            progress_callback(0, total_expected_cases)
+        
+        import asyncio
+        
+        # 创建每个方向的生成任务
+        async def generate_for_purpose(i, purpose):
+            try:
+                print(f"[TestCaseGen] 正在处理第 {i+1}/{total_purposes} 个测试方向: {purpose[:50]}...")
+                
+                # 为当前方向生成测试用例
+                result = await self.generate_test_cases_async(
+                    model, 
+                    purpose, 
+                    example_case,
+                    target_count=target_count_per_purpose
+                )
+                
+                if "error" in result:
+                    return {"error": f"生成'{purpose}'的测试用例失败: {result['error']}", "test_cases": []}
+                    
+                test_cases = result.get("test_cases", [])
+                return {"test_cases": test_cases}
+            except Exception as e:
+                return {"error": f"处理测试方向时出错: {str(e)}", "test_cases": []}
+        
+        # 并行执行所有方向的生成任务
+        tasks = []
+        for i, purpose in enumerate(test_purposes):
+            tasks.append(generate_for_purpose(i, purpose))
+            
+        # 执行所有任务并等待结果
+        batch_results = await asyncio.gather(*tasks)
+        
+        # 处理结果
+        for i, result in enumerate(batch_results):
+            if "error" in result and result["error"]:
+                errors.append(result["error"])
+            test_cases = result.get("test_cases", [])
+            all_test_cases.extend(test_cases)
+            
+            # 更新进度
+            if progress_callback:
+                completed_cases = min(len(all_test_cases), total_expected_cases)
+                progress_callback(completed_cases, total_expected_cases)
+                
+            print(f"[TestCaseGen] 已完成第 {i+1}/{total_purposes} 个测试方向，累计生成 {len(all_test_cases)} 个测试用例")
+        
+        # 确保最终进度为100%
+        if progress_callback:
+            progress_callback(total_expected_cases, total_expected_cases)
+            
+        return {
+            "test_cases": all_test_cases,
+            "errors": errors if errors else None
+        }
+
+    def generate_test_cases_batch(self, model: str, test_purposes: List[str], example_case: Dict, target_count_per_purpose: int = 3, progress_callback=None) -> Dict:
+        """批量生成多组测试用例
+        
+        Args:
+            model: 模型名称
+            test_purposes: 测试目的列表
+            example_case: 示例测试用例
+            target_count_per_purpose: 每个测试目的生成的用例数量
+            progress_callback: 进度回调函数（可选）
+            
+        Returns:
+            Dict: 包含多组测试用例的字典或错误信息
+        """
+        # 使用asyncio运行异步函数
+        import asyncio
+        try:
+            # 尝试获取当前事件循环
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            # 如果没有事件循环，创建一个新的
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        try:
+            # 运行异步函数
+            return loop.run_until_complete(
+                self.generate_test_cases_batch_async(
+                    model, 
+                    test_purposes, 
+                    example_case, 
+                    target_count_per_purpose, 
+                    progress_callback
+                )
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"error": f"批量生成测试用例时出错: {str(e)}"}
 
     def run_evaluation(self, evaluation_tasks: List[Dict]) -> List[Dict]:
         """同步批量评估，自动调度事件循环，支持并发"""
@@ -398,15 +574,116 @@ class PromptEvaluator:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         
+        # 修复：不要关闭循环，让外部决定何时关闭
+        return loop.run_until_complete(self.run_evaluation_async(evaluation_tasks))
+        
+    async def run_evaluation_async(self, evaluation_tasks: List[Dict]) -> List[Dict]:
+        """异步批量评估多个响应"""
+        if self.use_local_evaluation:
+            # 使用本地评估，并行处理所有任务
+            return [
+                self.perform_basic_evaluation(
+                    task.get("model_response", ""),
+                    task.get("expected_output", "")
+                )
+                for task in evaluation_tasks
+            ]
+        
+        # 准备并行请求
+        requests = []
+        for task in evaluation_tasks:
+            model_response = task.get("model_response", "")
+            expected_output = task.get("expected_output", "")
+            criteria = task.get("criteria", {})
+            prompt = task.get("prompt", "")
+            
+            # 构建评估提示词
+            template = self.evaluator_template.get("template", "")
+            evaluation_prompt = template\
+                .replace("{{prompt}}", prompt)\
+                .replace("{{model_response}}", model_response)\
+                .replace("{{expected_output}}", expected_output)\
+                .replace("{{evaluation_criteria}}", json.dumps(criteria, ensure_ascii=False, indent=2))
+            
+            # 添加请求到批处理队列
+            requests.append({
+                "model": self.evaluator_model,
+                "provider": self.provider,
+                "prompt": evaluation_prompt,
+                "params": {
+                    "temperature": 0.2,
+                    "max_tokens": 1500
+                },
+                "context": {
+                    "model_response": model_response,
+                    "expected_output": expected_output
+                }
+            })
+        
+        # 批量执行请求
         try:
-            # 运行异步批量评估函数
-            return loop.run_until_complete(self.run_evaluation_async(evaluation_tasks))
-        finally:
-            # 如果事件循环不是由外部管理且未在运行，则关闭它
-            if not loop.is_running():
-                 try:
-                     # Check if loop is closed before trying to close it
-                     if not loop.is_closed():
-                         loop.close()
-                 except Exception as e:
-                     print(f"Error closing event loop: {e}") # Log error if closing fails
+            responses = await execute_models(requests)
+            
+            # 处理响应结果
+            results = []
+            for i, response in enumerate(responses):
+                task = evaluation_tasks[i]
+                context = response.get("context", {})
+                model_response = context.get("model_response", "")
+                expected_output = context.get("expected_output", "")
+                
+                # 如果API调用成功，解析结果
+                if "text" in response and not response.get("error"):
+                    try:
+                        eval_text = response.get("text", "")
+                        
+                        # 清理可能的前后缀文本
+                        if "```json" in eval_text:
+                            eval_text = eval_text.split("```json")[1].split("```")[0].strip()
+                        elif "```" in eval_text:
+                            eval_text = eval_text.split("```")[1].split("```")[0].strip()
+                        
+                        eval_data = json.loads(eval_text)
+                        
+                        # 添加提示词token信息
+                        eval_data["prompt_info"] = {
+                            "token_count": count_tokens(task.get("prompt", "")),
+                        }
+                        
+                        results.append(eval_data)
+                    except Exception as e:
+                        # 解析错误，使用本地评估
+                        local_result = self.perform_basic_evaluation(model_response, expected_output)
+                        local_result["error"] = f"评估结果解析失败: {str(e)}"
+                        local_result["raw_response"] = response.get("text", "")
+                        results.append(local_result)
+                else:
+                    # API调用失败，使用本地评估
+                    local_result = self.perform_basic_evaluation(model_response, expected_output)
+                    local_result["error"] = response.get("error", "未知错误")
+                    results.append(local_result)
+            
+            return results
+        except Exception as e:
+            # 批处理失败，回退到单个处理
+            print(f"批量评估失败: {str(e)}，回退到单个处理模式")
+            results = []
+            for task in evaluation_tasks:
+                try:
+                    result = await self.evaluate_response(
+                        task.get("model_response", ""),
+                        task.get("expected_output", ""),
+                        task.get("criteria", {}),
+                        task.get("prompt", "")
+                    )
+                    results.append(result)
+                except Exception as ex:
+                    # 单个评估也失败，使用本地评估
+                    local_result = self.perform_basic_evaluation(
+                        task.get("model_response", ""),
+                        task.get("expected_output", "")
+                    )
+                    local_result["error"] = f"评估失败: {str(ex)}"
+                    results.append(local_result)
+            
+            return results

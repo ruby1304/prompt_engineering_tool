@@ -16,6 +16,29 @@ def generate_unique_id(prefix="case"):
     unique_part = str(uuid.uuid4())[:8]  # 使用UUID的一部分，避免ID太长
     return f"{prefix}_{timestamp}_{unique_part}"
 
+def get_shortened_id(case_id):
+    """从完整ID中提取缩短版用于显示
+    
+    Args:
+        case_id (str): 完整的测试用例ID
+        
+    Returns:
+        str: 缩短的ID，适合显示
+    """
+    if not case_id:
+        return "未知ID"
+        
+    # 如果是自定义ID（不包含下划线），则直接返回
+    if "_" not in case_id:
+        return case_id
+        
+    # 如果是系统生成的ID (case_timestamp_uuid)，只返回uuid部分或截取部分
+    parts = case_id.split("_")
+    if len(parts) >= 3:
+        return parts[-1][:6]  # 只显示UUID的前6位
+    
+    return case_id  # 无法解析时返回原始ID
+
 def ensure_unique_id(case, existing_ids=None):
     """确保测试用例有唯一ID，如果重复或不存在则生成新ID
     
@@ -679,17 +702,30 @@ def render_test_manager():
                     # 创建带边框的卡片
                     with st.container():
                         st.markdown(f"""
-                        <div style="padding:10px; border:1px solid #f0f2f6; border-radius:5px; margin-bottom:10px; border-left:4px solid {'#FF4B4B' if 'current_case_index' in st.session_state and st.session_state.current_case_index == real_index else 'transparent'}">
-                            <h4 style="margin:0; font-size:0.95em">{case_id}</h4>
+                        <div style="padding:10px; border:1px solid #f0f2f6; border-radius:5px; margin-bottom:10px; border-left:4px solid {'#FF4B4B' if 'current_case_id' in st.session_state and st.session_state.current_case_id == case.get('id', '') else 'transparent'}">
+                            <h4 style="margin:0; font-size:0.95em">{get_shortened_id(case_id)}</h4>
                             <p style="margin:4px 0; font-size:0.95em">{case_desc}</p>
                             <p style="margin:4px 0; font-size:0.85em; color:#777; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{input_preview}</p>
                         </div>
                         """, unsafe_allow_html=True)
                         
                         # 添加查看按钮
+                        # 在选择用例时保存case ID，不只是索引
                         if st.button("查看", key=f"view_btn_{real_index}"):
-                            st.session_state.current_case = case
-                            st.session_state.current_case_index = real_index
+                            # 直接使用filtered_cases的索引而不是原始数组索引
+                            selected_case = filtered_cases[real_index]
+                            
+                            # 找到这个用例在原始test_set中的索引，以支持编辑功能
+                            original_index = -1
+                            for i, original_case in enumerate(test_set["cases"]):
+                                if original_case.get("id") == selected_case.get("id"):
+                                    original_index = i
+                                    break
+                            
+                            # 保存到会话状态
+                            st.session_state.current_case = dict(selected_case)  # 使用深拷贝
+                            st.session_state.current_case_index = original_index  # 保存原始索引
+                            st.session_state.current_case_id = selected_case.get("id", "")  # 保存case ID用于高亮显示
                             st.rerun()
                 
                 # 分页控件
@@ -716,8 +752,17 @@ def render_test_manager():
         with detail_col:
             # 显示详情或提示选择用例
             if "current_case" in st.session_state and "current_case_index" in st.session_state:
-                case = st.session_state.current_case
                 case_index = st.session_state.current_case_index
+                
+                # 修复：从测试集重新获取最新的用例数据，而不是使用会话状态中的旧数据
+                if 0 <= case_index < len(test_set["cases"]):
+                    # 使用索引从测试集中获取最新的用例数据
+                    case = test_set["cases"][case_index]
+                    # 更新会话状态中的当前用例
+                    st.session_state.current_case = dict(case)
+                else:
+                    # 如果索引无效，使用会话状态中的用例数据
+                    case = st.session_state.current_case
                 
                 st.markdown(f"### ✏️ {case.get('description', '未命名测试用例')}")
                 
@@ -884,6 +929,8 @@ def render_test_manager():
                                             
                                             # 更新会话状态和UI显示
                                             st.session_state.current_case["expected_output"] = generated_text
+                                            # 更新编辑表单中的字段值，这样UI会立即反映新值
+                                            st.session_state[f"edit_output_{case_index}"] = generated_text
                                             
                                             # 自动保存测试集
                                             save_test_set(test_set["name"], test_set)
@@ -1049,18 +1096,28 @@ def render_test_manager():
                         case_to_update["user_input"] = new_user_input
                         case_to_update["expected_output"] = new_expected_output
                         
-                        # 从会话状态中可能修改的当前用例更新变量和评估标准
+                        # 更新会话状态中的当前用例以反映最新编辑
+                        st.session_state.current_case = dict(case_to_update)
+                        
+                        # 从会话状态中可能修改的其他部分更新变量和评估标准
+                        # 首先确保字段存在
+                        if "variables" not in case_to_update:
+                            case_to_update["variables"] = {}
+                        if "evaluation_criteria" not in case_to_update:
+                            case_to_update["evaluation_criteria"] = {}
+                            
+                        # 确保当前编辑的用例保持同步
                         current_edited_case = st.session_state.current_case
-                        case_to_update["variables"] = current_edited_case.get("variables", {})
-                        case_to_update["evaluation_criteria"] = current_edited_case.get("evaluation_criteria", {})
-
-                        # 更新会话状态的current_case以反映保存的状态
-                        st.session_state.current_case = case_to_update
+                        for var_name, var_value in current_edited_case.get("variables", {}).items():
+                            case_to_update["variables"][var_name] = var_value
+                            
+                        for crit_name, crit_value in current_edited_case.get("evaluation_criteria", {}).items():
+                            case_to_update["evaluation_criteria"][crit_name] = crit_value
                         
                         # 自动保存测试集
                         try:
                             save_test_set(test_set["name"], test_set)
-                            st.success("测试用例已保存")
+                            st.success("✅ 测试用例已保存")
                         except Exception as e:
                             st.error(f"保存测试用例失败: {str(e)}")
                         

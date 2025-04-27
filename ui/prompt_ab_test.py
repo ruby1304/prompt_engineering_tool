@@ -13,7 +13,6 @@ from utils.common import (
     get_dimension_scores, 
     create_dimension_radar_chart,
     run_test,
-    display_template_info,
     save_optimized_template,
     compare_dimension_performance
 )
@@ -23,6 +22,15 @@ from ui.components import (
     display_evaluation_results,
     display_test_case_details
 )
+
+# 添加原本应在 utils.common 中但实际不存在的函数
+def display_template_info(template):
+    """显示提示词模板信息"""
+    if template:
+        st.markdown(f"**名称**: {template.get('name', '未命名')}")
+        st.markdown(f"**描述**: {template.get('description', '无描述')}")
+        with st.expander("查看提示词内容"):
+            st.code(template.get("template", ""), language="markdown")
 
 def render_prompt_ab_test():
     st.title("🔬 提示词A/B测试")
