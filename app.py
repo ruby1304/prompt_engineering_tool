@@ -30,6 +30,7 @@ from ui.prompt_optimization import render_prompt_optimization
 from ui.prompt_ab_test import render_prompt_ab_test
 from ui.prompt_batch_ab_test import render_prompt_batch_ab_test
 from ui.provider_manager import render_provider_manager
+from ui.prompt_interactive_test import render_prompt_interactive_test
 
 
 # 设置页面配置
@@ -76,6 +77,9 @@ with st.sidebar:
     if st.button("🧪 测试运行", use_container_width=True):
         navigate_to("test_runner")
     
+    if st.button("💬 交互式测试", use_container_width=True):
+        navigate_to("prompt_interactive_test")
+        
     if st.button("📈 结果查看", use_container_width=True):
         navigate_to("results_viewer")
 
@@ -117,7 +121,7 @@ if st.session_state.page == "home":
     # 显示快速启动卡片
     st.subheader("快速启动")
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         st.info("### 📝 创建提示词")
@@ -132,9 +136,15 @@ if st.session_state.page == "home":
             navigate_to("test_manager")
     
     with col3:
-        st.info("### 🧪 运行测试")
-        st.markdown("选择提示词和测试集，运行测试并分析结果")
-        if st.button("开始测试", key="start_test"):
+        st.info("### 💬 交互式测试")
+        st.markdown("选择模板和模型，输入内容并获取回复，手动评分")
+        if st.button("交互式测试", key="start_interactive"):
+            navigate_to("prompt_interactive_test")
+            
+    with col4:
+        st.info("### 🧪 批量测试")
+        st.markdown("选择提示词和测试集，批量测试并分析结果")
+        if st.button("批量测试", key="start_batch_test"):
             navigate_to("test_runner")
 
 # 渲染其他页面
@@ -149,6 +159,9 @@ elif st.session_state.page == "test_runner":
 
 elif st.session_state.page == "results_viewer":
     render_results_viewer()
+
+elif st.session_state.page == "prompt_interactive_test":
+    render_prompt_interactive_test()
 
 # 在页面路由部分添加
 elif st.session_state.page == "prompt_optimization":

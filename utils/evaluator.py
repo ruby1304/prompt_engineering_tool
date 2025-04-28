@@ -34,7 +34,7 @@ class PromptEvaluator:
         """评估模型响应"""
         # 如果配置为使用本地评估，直接返回本地评估结果
         if self.use_local_evaluation:
-            return self.perform_basic_evaluation(model_response, expected_output)
+            return self.perform_basic_evaluation(model_response, expected_output, prompt)
             
         prompt_tokens = count_tokens(prompt)
         
@@ -77,17 +77,37 @@ class PromptEvaluator:
                     "token_count": prompt_tokens,
                 }
                 
+                # 如果评估结果中没有提示词效率评分，添加一个
+                if "scores" in eval_data and "prompt_efficiency" not in eval_data["scores"]:
+                    # 线性评分：提示词越短，评分越高
+                    if prompt_tokens == 0:
+                        prompt_efficiency = 100  # 空提示词，给满分(实际上这种情况很少)
+                    else:
+                        # 线性公式：100 - (tokens - 100) * 0.1, 限定在40-100之间
+                        # 100个tokens及以下得满分，之后每增加10个tokens减1分
+                        base_score = 100
+                        token_penalty = max(0, prompt_tokens - 100) * 0.1
+                        prompt_efficiency = max(40, min(100, base_score - token_penalty))
+                    
+                    eval_data["scores"]["prompt_efficiency"] = prompt_efficiency
+                    
+                    # 重新计算总体分数，包含提示词效率
+                    if "overall_score" in eval_data:
+                        scores = eval_data["scores"]
+                        total = sum(scores.values())
+                        eval_data["overall_score"] = int(total / len(scores))
+                
                 return eval_data
             except json.JSONDecodeError:
                 # 解析失败，返回错误信息并使用本地评估作为备选
-                local_result = self.perform_basic_evaluation(model_response, expected_output)
+                local_result = self.perform_basic_evaluation(model_response, expected_output, prompt)
                 local_result["error"] = "评估结果格式错误，已切换到本地评估"
                 local_result["raw_response"] = eval_text
                 return local_result
                 
         except Exception as e:
             # 发生错误时使用本地评估作为备选
-            local_result = self.perform_basic_evaluation(model_response, expected_output)
+            local_result = self.perform_basic_evaluation(model_response, expected_output, prompt)
             local_result["error"] = f"评估过程出错: {str(e)}，已切换到本地评估"
             return local_result
             
@@ -95,7 +115,7 @@ class PromptEvaluator:
         """同步评估模型响应"""
         # 如果配置为使用本地评估，直接返回本地评估结果
         if self.use_local_evaluation:
-            return self.perform_basic_evaluation(model_response, expected_output)
+            return self.perform_basic_evaluation(model_response, expected_output, prompt)
 
         import time
         import os
@@ -118,7 +138,7 @@ class PromptEvaluator:
             
             if self.use_local_evaluation:
                 log_message("当前配置为使用本地评估")
-                return self.perform_basic_evaluation(model_response, expected_output)
+                return self.perform_basic_evaluation(model_response, expected_output, prompt)
             
             # 记录评估请求内容
             log_message(f"评估请求 - 模型响应长度: {len(model_response)}, 期望输出长度: {len(expected_output)}")
@@ -142,7 +162,7 @@ class PromptEvaluator:
             except Exception as e:
                 log_message(f"处理评估时出错: {str(e)}")
                 # 使用本地评估作为备选
-                local_result = self.perform_basic_evaluation(model_response, expected_output)
+                local_result = self.perform_basic_evaluation(model_response, expected_output, prompt)
                 local_result["error"] = f"无法执行AI评估，已切换到本地评估: {str(e)}"
                 return local_result
                 
@@ -153,7 +173,7 @@ class PromptEvaluator:
             log_message(f"错误详情: {error_details}")
             
             # 发生错误时使用本地评估
-            local_result = self.perform_basic_evaluation(model_response, expected_output)
+            local_result = self.perform_basic_evaluation(model_response, expected_output, prompt)
             local_result["error"] = f"评估过程出错，已切换到本地评估: {str(e)}"
             return local_result
     
@@ -201,21 +221,41 @@ class PromptEvaluator:
                     "token_count": prompt_tokens,
                 }
                 
+                # 如果评估结果中没有提示词效率评分，添加一个
+                if "scores" in eval_data and "prompt_efficiency" not in eval_data["scores"]:
+                    # 线性评分：提示词越短，评分越高
+                    if prompt_tokens == 0:
+                        prompt_efficiency = 100  # 空提示词，给满分(实际上这种情况很少)
+                    else:
+                        # 线性公式：100 - (tokens - 100) * 0.1, 限定在40-100之间
+                        # 100个tokens及以下得满分，之后每增加10个tokens减1分
+                        base_score = 100
+                        token_penalty = max(0, prompt_tokens - 100) * 0.1
+                        prompt_efficiency = max(40, min(100, base_score - token_penalty))
+                    
+                    eval_data["scores"]["prompt_efficiency"] = prompt_efficiency
+                    
+                    # 重新计算总体分数，包含提示词效率
+                    if "overall_score" in eval_data:
+                        scores = eval_data["scores"]
+                        total = sum(scores.values())
+                        eval_data["overall_score"] = int(total / len(scores))
+                
                 return eval_data
             except json.JSONDecodeError:
                 # 解析失败，返回错误信息并使用本地评估作为备选
-                local_result = self.perform_basic_evaluation(model_response, expected_output)
+                local_result = self.perform_basic_evaluation(model_response, expected_output, prompt)
                 local_result["error"] = "评估结果格式错误，已切换到本地评估"
                 local_result["raw_response"] = eval_text
                 return local_result
                 
         except Exception as e:
             # 发生错误时使用本地评估作为备选
-            local_result = self.perform_basic_evaluation(model_response, expected_output)
+            local_result = self.perform_basic_evaluation(model_response, expected_output, prompt)
             local_result["error"] = f"评估过程出错: {str(e)}，已切换到本地评估"
             return local_result
 
-    def perform_basic_evaluation(self, model_response: str, expected_output: str) -> Dict:
+    def perform_basic_evaluation(self, model_response: str, expected_output: str, prompt: str = "") -> Dict:
         """当评估模型无法使用时，执行基本评估"""
         try:
             # 简单评估 - 使用字符串相似度
@@ -235,9 +275,22 @@ class PromptEvaluator:
             # 相关性和清晰度默认值
             relevance = 70  # 默认相关性分数
             clarity = 75    # 默认清晰度分数
-
-            # 计算总体分数
-            overall_score = int((accuracy_score + completeness + relevance + clarity) / 4)
+            
+            # 计算提示词效率得分 (0-100分) - 线性计算，字符数越少分数越高
+            prompt_tokens = count_tokens(prompt) if prompt else 0
+            
+            # 线性评分：基准为500 tokens，每增减1个token相应减增0.1分，最低40分，最高100分
+            if prompt_tokens == 0:
+                prompt_efficiency = 100  # 空提示词，给满分(实际上这种情况很少)
+            else:
+                # 线性公式：100 - (tokens - 100) * 0.1, 限定在40-100之间
+                # 100个tokens及以下得满分，之后每增加10个tokens减1分
+                base_score = 100
+                token_penalty = max(0, prompt_tokens - 100) * 0.1
+                prompt_efficiency = max(40, min(100, base_score - token_penalty))
+                
+            # 计算总体分数，将prompt效率作为评估因素
+            overall_score = int((accuracy_score + completeness + relevance + clarity + prompt_efficiency) / 5)
 
             # 生成基本评估结果
             return {
@@ -245,20 +298,22 @@ class PromptEvaluator:
                     "accuracy": accuracy_score,
                     "completeness": completeness,
                     "relevance": relevance,
-                    "clarity": clarity
+                    "clarity": clarity,
+                    "prompt_efficiency": prompt_efficiency  # 添加提示词效率评分
                 },
-                "analysis": "这是一个本地生成的基本评估，未使用评估模型。本地评估主要基于文本相似度，可能无法准确评估语义理解。",
+                "analysis": "这是一个本地生成的基本评估，未使用评估模型。本地评估主要基于文本相似度和提示词长度，可能无法准确评估语义理解。",
                 "overall_score": overall_score,
                 "prompt_info": {
-                    "token_count": count_tokens(model_response),
+                    "token_count": prompt_tokens,
                 },
                 "is_local_evaluation": True  # 标记这是本地评估
             }
         except Exception as e:
+            prompt_tokens = count_tokens(prompt) if prompt else 0
             return {
                 "error": f"本地评估出错: {str(e)}",
                 "prompt_info": {
-                    "token_count": count_tokens(model_response),
+                    "token_count": prompt_tokens,
                 },
                 "is_local_evaluation": True
             }
@@ -584,7 +639,8 @@ class PromptEvaluator:
             return [
                 self.perform_basic_evaluation(
                     task.get("model_response", ""),
-                    task.get("expected_output", "")
+                    task.get("expected_output", ""),
+                    task.get("prompt", "")  # 传递prompt参数
                 )
                 for task in evaluation_tasks
             ]
@@ -616,7 +672,8 @@ class PromptEvaluator:
                 },
                 "context": {
                     "model_response": model_response,
-                    "expected_output": expected_output
+                    "expected_output": expected_output,
+                    "prompt": prompt  # 存储原始提示词以便后续使用
                 }
             })
         
@@ -631,6 +688,7 @@ class PromptEvaluator:
                 context = response.get("context", {})
                 model_response = context.get("model_response", "")
                 expected_output = context.get("expected_output", "")
+                prompt = task.get("prompt", "")  # 获取原始提示词
                 
                 # 如果API调用成功，解析结果
                 if "text" in response and not response.get("error"):
@@ -646,20 +704,41 @@ class PromptEvaluator:
                         eval_data = json.loads(eval_text)
                         
                         # 添加提示词token信息
+                        prompt_tokens = count_tokens(prompt)
                         eval_data["prompt_info"] = {
-                            "token_count": count_tokens(task.get("prompt", "")),
+                            "token_count": prompt_tokens,
                         }
+                        
+                        # 如果评估结果中没有提示词效率评分，添加一个
+                        if "scores" in eval_data and "prompt_efficiency" not in eval_data["scores"]:
+                            # 线性评分：提示词越短，评分越高
+                            if prompt_tokens == 0:
+                                prompt_efficiency = 100  # 空提示词，给满分(实际上这种情况很少)
+                            else:
+                                # 线性公式：100 - (tokens - 100) * 0.1, 限定在40-100之间
+                                # 100个tokens及以下得满分，之后每增加10个tokens减1分
+                                base_score = 100
+                                token_penalty = max(0, prompt_tokens - 100) * 0.1
+                                prompt_efficiency = max(40, min(100, base_score - token_penalty))
+                            
+                            eval_data["scores"]["prompt_efficiency"] = prompt_efficiency
+                            
+                            # 重新计算总体分数，包含提示词效率
+                            if "overall_score" in eval_data:
+                                scores = eval_data["scores"]
+                                total = sum(scores.values())
+                                eval_data["overall_score"] = int(total / len(scores))
                         
                         results.append(eval_data)
                     except Exception as e:
                         # 解析错误，使用本地评估
-                        local_result = self.perform_basic_evaluation(model_response, expected_output)
+                        local_result = self.perform_basic_evaluation(model_response, expected_output, prompt)
                         local_result["error"] = f"评估结果解析失败: {str(e)}"
                         local_result["raw_response"] = response.get("text", "")
                         results.append(local_result)
                 else:
                     # API调用失败，使用本地评估
-                    local_result = self.perform_basic_evaluation(model_response, expected_output)
+                    local_result = self.perform_basic_evaluation(model_response, expected_output, prompt)
                     local_result["error"] = response.get("error", "未知错误")
                     results.append(local_result)
             
@@ -681,7 +760,8 @@ class PromptEvaluator:
                     # 单个评估也失败，使用本地评估
                     local_result = self.perform_basic_evaluation(
                         task.get("model_response", ""),
-                        task.get("expected_output", "")
+                        task.get("expected_output", ""),
+                        task.get("prompt", "")  # 传递prompt参数
                     )
                     local_result["error"] = f"评估失败: {str(ex)}"
                     results.append(local_result)
