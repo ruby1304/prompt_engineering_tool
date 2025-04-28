@@ -10,6 +10,7 @@ from utils.common import render_prompt_template
 from models.api_clients import get_provider_from_model, get_client
 from ui.components import select_single_model
 from utils.parallel_executor import execute_models_sync
+from utils.evaluator import PromptEvaluator
 
 
 def render_prompt_interactive_test():
@@ -19,7 +20,7 @@ def render_prompt_interactive_test():
     st.markdown("""
     <div style="background-color: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
     <h3 style="color: #4b778d;">在这里交互式测试提示词模板</h3>
-    <p>选择提示词模板和模型，输入自定义内容，查看模型回复，将满意的测试案例保存到测试集中。</p>
+    <p>选择提示词模板和模型，输入自定义内容，查看模型回复，将用户输入保存到测试集中。</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -98,7 +99,7 @@ def render_prompt_interactive_test():
             selected_test_set = st.selectbox(
                 "选择测试集",
                 options=test_set_list,
-                help="选择要将成功案例添加到的测试集"
+                help="选择要将用户输入添加到的测试集"
             )
             
             if selected_test_set:
@@ -123,6 +124,8 @@ def render_prompt_interactive_test():
             st.session_state.test_results = []
         if "user_input" not in st.session_state:
             st.session_state.user_input = ""
+        if "evaluation_results" not in st.session_state:
+            st.session_state.evaluation_results = {}
         
         if run_btn:
             if not user_input:
@@ -231,18 +234,22 @@ def render_prompt_interactive_test():
                                     "usage": response.get("usage", {})
                                 })
                     
-                    # 保存结果到会话状态
+                    # 保存结果到会话状态，不执行评估
                     st.session_state.test_results = [
                         {
+                            "id": f"result_{i}_{int(time.time())}",  # 添加唯一ID用于后续评估
                             "template": template,
                             "model": model,
                             "user_input": user_input,
+                            "prompt_template": prompt_template,
                             "model_response": result.get("model_response", ""),
                             "usage": result.get("usage", {})
                         }
-                        for result in results
+                        for i, result in enumerate(results)
                     ]
                     st.session_state.user_input = user_input
+                    # 清空之前的评估结果
+                    st.session_state.evaluation_results = {}
                     
                 except Exception as e:
                     st.error(f"测试失败: {str(e)}")
@@ -252,71 +259,180 @@ def render_prompt_interactive_test():
         if st.session_state.test_results:
             user_input = st.session_state.user_input
             
-            st.write("### 用户输入:")
-            st.code(user_input)
+            # 创建一个顶部操作栏，包含保存和清除按钮
+            action_col1, action_col2, action_col3 = st.columns([5, 2, 2])
             
-            # 平铺显示所有结果，而不是使用选项卡
-            for i, result in enumerate(st.session_state.test_results):
-                st.write(f"### 模型回复 {i+1}:")
-                st.code(result["model_response"])
-                
-                # 使用率信息
-                usage = result.get("usage", {})
-                if usage:
-                    with st.expander(f"Token 使用情况 - 结果 {i+1}", expanded=False):
-                        st.json(usage)
-                
-                # 为每个结果添加保存到测试集的选项
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    case_description = st.text_input(f"测试用例描述", value=f"{selected_template_name}交互测试 {i+1}", key=f"desc_{i}")
-                
-                with col2:
-                    if st.button(f"💾 保存此结果", key=f"save_{i}", use_container_width=True):
-                        if not selected_test_set:
-                            st.error("请选择目标测试集")
-                            continue
-                            
+            with action_col1:
+                st.write("### 用户输入:")
+                st.code(user_input)
+            
+            # 统一的保存用户输入按钮
+            with action_col2:
+                if st.button("💾 保存用户输入", use_container_width=True):
+                    if not selected_test_set:
+                        st.error("请选择目标测试集")
+                    else:
                         # 加载测试集
                         test_set = load_test_set(selected_test_set)
                         if not test_set:
                             st.error(f"无法加载测试集 {selected_test_set}")
-                            continue
-                        
-                        # 创建新的测试用例
-                        new_case = {
-                            "id": generate_unique_id(),
-                            "description": case_description,
-                            "user_input": user_input,
-                            "expected_output": result["model_response"],  # 使用模型响应作为期望输出
-                            "evaluation_criteria": {
-                                "accuracy": "评估回答的准确性",
-                                "completeness": "评估回答的完整性",
-                                "relevance": "评估回答的相关性",
-                                "clarity": "评估回答的清晰度"
-                            },
-                            "variables": {},
-                            "timestamp": int(time.time())
-                        }
-                        
-                        # 添加到测试集
-                        test_set = add_test_case(test_set, new_case)
-                        
-                        # 保存更新的测试集
-                        save_test_set(selected_test_set, test_set)
-                        
-                        st.success(f"测试用例已成功添加到测试集 '{selected_test_set}'")
-                
-                # 添加分隔线（除了最后一个结果）
-                if i < len(st.session_state.test_results) - 1:
-                    st.markdown("---")
+                        else:
+                            # 创建新的测试用例，只包含用户输入，不包含模型输出
+                            new_case = {
+                                "id": generate_unique_id(),
+                                "description": f"{selected_template_name}用户输入",
+                                "user_input": user_input,
+                                "expected_output": "",  # 不设置期望输出
+                                "evaluation_criteria": {
+                                    "accuracy": "评估回答的准确性",
+                                    "completeness": "评估回答的完整性",
+                                    "relevance": "评估回答的相关性",
+                                    "clarity": "评估回答的清晰度"
+                                },
+                                "variables": {},
+                                "timestamp": int(time.time())
+                            }
+                            
+                            # 添加到测试集
+                            test_set = add_test_case(test_set, new_case)
+                            
+                            # 保存更新的测试集
+                            save_test_set(selected_test_set, test_set)
+                            
+                            st.success(f"用户输入已保存到测试集 '{selected_test_set}'")
             
-            # 清除所有结果的按钮
-            if len(st.session_state.test_results) > 1:
-                if st.button("🔄 清除并继续测试", use_container_width=True):
+            # 清除结果按钮
+            with action_col3:
+                if st.button("🔄 清除结果", use_container_width=True):
                     # 清空测试结果
                     st.session_state.test_results = []
                     st.session_state.user_input = ""
+                    st.session_state.evaluation_results = {}
                     st.experimental_rerun()
+            
+            # 使用选项卡展示多个模型回复，提高布局效率
+            if len(st.session_state.test_results) > 1:
+                tabs = st.tabs([f"回复 {i+1}" for i in range(len(st.session_state.test_results))])
+                for i, (tab, result) in enumerate(zip(tabs, st.session_state.test_results)):
+                    result_id = result["id"]
+                    
+                    with tab:
+                        # 模型回复
+                        st.write("#### 模型回复:")
+                        st.code(result["model_response"])
+                        
+                        # 添加独立的评估按钮
+                        if st.button(f"📊 评估此响应", key=f"evaluate_{result_id}"):
+                            with st.spinner("正在评估模型响应..."):
+                                evaluation = evaluate_model_response(result)
+                                st.session_state.evaluation_results[result_id] = evaluation
+                                st.experimental_rerun()  # 重新加载以显示评估结果
+                        
+                        # 如果有评估结果，显示评估结果
+                        if result_id in st.session_state.evaluation_results:
+                            display_evaluation_result(st.session_state.evaluation_results[result_id])
+                        
+                        # 显示Token使用情况
+                        usage = result.get("usage", {})
+                        if usage:
+                            with st.expander("Token 使用情况", expanded=False):
+                                st.json(usage)
+            else:
+                # 单个结果直接显示
+                result = st.session_state.test_results[0]
+                result_id = result["id"]
+                
+                # 模型回复
+                st.write("### 模型回复:")
+                st.code(result["model_response"])
+                
+                # 添加独立的评估按钮
+                if st.button(f"📊 评估此响应", key=f"evaluate_{result_id}"):
+                    with st.spinner("正在评估模型响应..."):
+                        evaluation = evaluate_model_response(result)
+                        st.session_state.evaluation_results[result_id] = evaluation
+                        st.experimental_rerun()  # 重新加载以显示评估结果
+                
+                # 如果有评估结果，显示评估结果
+                if result_id in st.session_state.evaluation_results:
+                    display_evaluation_result(st.session_state.evaluation_results[result_id])
+                
+                # 显示Token使用情况
+                usage = result.get("usage", {})
+                if usage:
+                    with st.expander("Token 使用情况", expanded=False):
+                        st.json(usage)
         else:
             st.info("运行测试以查看模型回复")
+
+
+def evaluate_model_response(result: Dict) -> Dict:
+    """评估模型响应与提示词的匹配程度"""
+    evaluator = PromptEvaluator()
+    
+    # 提取所需数据
+    model_response = result.get("model_response", "")
+    prompt_template = result.get("prompt_template", "")
+    user_input = result.get("user_input", "")
+    
+    # 评估标准
+    evaluation_criteria = {
+        "accuracy": "模型响应是否准确满足用户需求",
+        "completeness": "模型响应是否完整回答了用户问题",
+        "relevance": "模型响应是否与用户问题相关",
+        "clarity": "模型响应是否清晰易懂",
+        "instruction_following": "模型是否遵循了提示词中的指令"
+    }
+    
+    # 创建一个期望输出，用于评估
+    # 在交互式测试中我们没有实际的期望输出，所以使用一个通用说明
+    expected_output = "根据提示词要求，给出恰当的回答"
+    
+    # 执行评估
+    return evaluator.evaluate_response_sync(
+        model_response,
+        expected_output,
+        evaluation_criteria,
+        prompt_template + "\n用户: " + user_input
+    )
+
+
+def display_evaluation_result(evaluation: Dict):
+    """展示评估结果"""
+    st.write("#### 响应评估结果:")
+    
+    # 如果有错误信息，显示错误
+    if "error" in evaluation:
+        st.warning(f"评估过程遇到问题: {evaluation.get('error')}")
+        return
+    
+    # 显示分数
+    if "scores" in evaluation:
+        scores = evaluation["scores"]
+        
+        # 创建两行评分，每行显示三个指标
+        row1_cols = st.columns(3)
+        with row1_cols[0]:
+            st.metric("准确性", f"{scores.get('accuracy', 0)}分")
+        with row1_cols[1]:
+            st.metric("完整性", f"{scores.get('completeness', 0)}分")
+        with row1_cols[2]:
+            st.metric("相关性", f"{scores.get('relevance', 0)}分")
+        
+        row2_cols = st.columns(3)
+        with row2_cols[0]:
+            st.metric("清晰度", f"{scores.get('clarity', 0)}分")
+        with row2_cols[1]:
+            st.metric("指令遵循", f"{scores.get('instruction_following', 0)}分")
+        with row2_cols[2]:
+            st.metric("总体评分", f"{evaluation.get('overall_score', 0)}分")
+        
+        # 显示评估总结
+        if "summary" in evaluation:
+            st.write("**评估总结:**")
+            st.info(evaluation["summary"])
+        
+        # 详细分析
+        if "analysis" in evaluation:
+            with st.expander("查看详细分析", expanded=False):
+                st.write(evaluation["analysis"])
