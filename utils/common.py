@@ -7,6 +7,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from typing import Dict, List, Any, Optional, Tuple, Callable
 import asyncio
+import time
 
 from models.token_counter import count_tokens
 from models.api_clients import get_client, get_provider_from_model
@@ -584,3 +585,130 @@ def compare_dimension_performance(results_list, labels, section_title="维度表
         if improvement_data:
             st.subheader("各维度改进情况")
             st.dataframe(pd.DataFrame(improvement_data), use_container_width=True)
+
+def generate_dialogue_improvement_report(dialogue_history: List[Dict], evaluation_results: List[Dict]) -> str:
+    """生成对话改进报告
+    
+    Args:
+        dialogue_history: 对话历史
+        evaluation_results: 评估结果列表
+        
+    Returns:
+        str: 生成的Markdown格式报告
+    """
+    # 提取基本信息
+    num_turns = len(dialogue_history)
+    model_name = dialogue_history[0]["model"] if dialogue_history else "未知模型"
+    
+    # 计算平均分数
+    avg_scores = {}
+    overall_scores = []
+    
+    for eval_result in evaluation_results:
+        if eval_result and "scores" in eval_result:
+            for key, score in eval_result["scores"].items():
+                if key != "prompt_efficiency":
+                    avg_scores[key] = avg_scores.get(key, 0) + score
+            
+            if "overall_score" in eval_result:
+                overall_scores.append(eval_result["overall_score"])
+    
+    # 计算平均值
+    for key in avg_scores:
+        avg_scores[key] /= len(evaluation_results) if evaluation_results else 1
+    
+    avg_overall = sum(overall_scores) / len(overall_scores) if overall_scores else 0
+    
+    # 收集问题和建议
+    prompt_issues = []
+    model_issues = []
+    
+    for eval_result in evaluation_results:
+        if eval_result and "issues" in eval_result:
+            for issue in eval_result["issues"]:
+                if issue["type"] == "prompt" and issue not in prompt_issues:
+                    prompt_issues.append(issue)
+                elif issue["type"] == "model" and issue not in model_issues:
+                    model_issues.append(issue)
+    
+    # 生成报告
+    report = f"""# 多轮对话测试分析报告
+
+## 基本信息
+- **测试时间**: {time.strftime("%Y-%m-%d %H:%M:%S")}
+- **对话轮数**: {num_turns}
+- **使用模型**: {model_name}
+
+## 评分摘要
+- **总体评分**: {avg_overall:.1f}/100
+"""
+    
+    # 添加各维度平均分
+    report += "\n### 各维度平均分\n"
+    for key, score in avg_scores.items():
+        report += f"- **{key}**: {score:.1f}/100\n"
+    
+    # 添加问题分析
+    report += "\n## 问题分析\n"
+    
+    if prompt_issues:
+        report += "\n### 提示词问题\n"
+        for issue in prompt_issues:
+            report += f"- **严重程度**: {issue['severity']}\n"
+            report += f"  - **描述**: {issue['description']}\n"
+            report += f"  - **建议**: {issue['suggestion']}\n"
+    else:
+        report += "\n### 提示词问题\n- 未检测到明显问题\n"
+    
+    if model_issues:
+        report += "\n### 模型问题\n"
+        for issue in model_issues:
+            report += f"- **严重程度**: {issue['severity']}\n"
+            report += f"  - **描述**: {issue['description']}\n"
+            report += f"  - **建议**: {issue['suggestion']}\n"
+    else:
+        report += "\n### 模型问题\n- 未检测到明显问题\n"
+    
+    # 添加改进建议综述
+    report += "\n## 改进建议总结\n"
+    
+    # 提示词改进建议
+    prompt_suggestions = list(set([issue["suggestion"] for issue in prompt_issues]))
+    if prompt_suggestions:
+        report += "\n### 提示词改进建议\n"
+        for i, suggestion in enumerate(prompt_suggestions):
+            report += f"{i+1}. {suggestion}\n"
+    else:
+        report += "\n### 提示词改进建议\n- 提示词表现良好，没有特别需要改进的地方\n"
+    
+    # 模型改进建议
+    model_suggestions = list(set([issue["suggestion"] for issue in model_issues]))
+    if model_suggestions:
+        report += "\n### 模型使用建议\n"
+        for i, suggestion in enumerate(model_suggestions):
+            report += f"{i+1}. {suggestion}\n"
+    else:
+        report += "\n### 模型使用建议\n- 模型表现良好，没有特别需要调整的地方\n"
+    
+    return report
+
+def format_chat_history(history: List[Dict], max_turns: int = 5) -> str:
+    """将对话历史格式化为模板可用的格式，只保留最近n轮对话
+    
+    Args:
+        history: 对话历史
+        max_turns: 最大保留轮次
+        
+    Returns:
+        str: 格式化后的对话历史
+    """
+    # 只保留最近的n轮对话
+    recent_history = history[-max_turns:] if len(history) > max_turns else history
+    
+    formatted = ""
+    
+    for exchange in recent_history:
+        formatted += f"用户: {exchange['user']}\n"
+        formatted += f"助手: {exchange['assistant']}\n\n"
+    
+    return formatted.strip()

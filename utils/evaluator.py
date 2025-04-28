@@ -767,3 +767,97 @@ class PromptEvaluator:
                     results.append(local_result)
             
             return results
+
+    def evaluate_dialogue_turn(self, user_input: str, model_response: str, prompt_template: str, turn_number: int, expected_output: str = "") -> Dict:
+        """评估单轮对话质量
+        
+        Args:
+            user_input: 用户输入的消息
+            model_response: 模型的回复
+            prompt_template: 使用的提示词模板
+            turn_number: 对话轮次编号
+            expected_output: 期望输出，如果为空则为无样本评估
+            
+        Returns:
+            Dict: 评估结果字典
+        """
+        # 构建评估提示
+        combined_prompt = f"用户问题:\n{user_input}\n\n提示词模板:\n{prompt_template}"
+        
+        # 检查是否为无样本评估场景
+        is_no_sample = expected_output == ""
+        
+        if is_no_sample:
+            # 无样本评估时使用简化的评估标准，专注于用户体验相关维度
+            evaluation_criteria = {
+                "relevance": "模型响应与用户提问的相关性(0-100分)",
+                "helpfulness": "模型响应对解决用户问题的帮助程度(0-100分)",
+                "coherence": "模型回复的连贯性和逻辑性(0-100分)",
+                "prompt_following": "模型遵循提示词指令的程度(0-100分)"
+            }
+            # 设置通用期望输出
+            expected_output = f"回合 {turn_number}：根据提示词和用户问题给出有帮助、相关且连贯的回答"
+        else:
+            # 有样本评估时使用完整的评估标准
+            evaluation_criteria = {
+                "relevance": "模型响应与用户提问的相关性(0-100分)",
+                "helpfulness": "模型响应对解决用户问题的帮助程度(0-100分)",
+                "accuracy": "模型响应中信息的准确性(0-100分)",
+                "prompt_following": "模型遵循提示词指令的程度(0-100分)",
+                "consistency": "模型回复与之前对话的一致性(0-100分)",
+                "coherence": "模型回复的连贯性和逻辑性(0-100分)"
+            }
+        
+        # 调用评估器
+        evaluation = self.evaluate_response_sync(
+            model_response,
+            expected_output,
+            evaluation_criteria,
+            combined_prompt
+        )
+        
+        # 计算针对提示词和模型的问题诊断
+        if "scores" in evaluation:
+            scores = evaluation["scores"]
+            
+            # 分析可能的问题
+            issues = []
+            
+            # 根据评估标准动态调整问题诊断逻辑
+            if not is_no_sample and scores.get("accuracy", 0) < 70:
+                issues.append({
+                    "type": "model",
+                    "severity": "high" if scores.get("accuracy", 0) < 50 else "medium",
+                    "description": "模型生成的内容可能不准确",
+                    "suggestion": "考虑使用更高级的模型或提供更明确的知识指导"
+                })
+                
+            if scores.get("coherence", 0) < 70:
+                issues.append({
+                    "type": "model",
+                    "severity": "medium",
+                    "description": "模型生成的内容连贯性不足",
+                    "suggestion": "调低temperature参数以提高回复的连贯性"
+                })
+            
+            # 提示词问题判断标准
+            if scores.get("prompt_following", 0) < 70:
+                issues.append({
+                    "type": "prompt",
+                    "severity": "high" if scores.get("prompt_following", 0) < 50 else "medium",
+                    "description": "模型未能良好地遵循提示词指令",
+                    "suggestion": "明确提示词中的指令，增加详细的格式要求和约束"
+                })
+                
+            if not is_no_sample and scores.get("consistency", 0) < 70:
+                issues.append({
+                    "type": "prompt",
+                    "severity": "medium",
+                    "description": "模型回复与之前对话缺乏一致性",
+                    "suggestion": "在提示词中强调保持上下文一致性，或增加对话历史总结指令"
+                })
+                
+            # 将问题分析添加到评估结果中
+            evaluation["issues"] = issues
+        
+        return evaluation
