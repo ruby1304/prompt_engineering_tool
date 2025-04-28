@@ -31,6 +31,7 @@ from ui.prompt_ab_test import render_prompt_ab_test
 from ui.prompt_batch_ab_test import render_prompt_batch_ab_test
 from ui.provider_manager import render_provider_manager
 from ui.prompt_interactive_test import render_prompt_interactive_test
+from ui.prompt_dialogue_test import render_prompt_dialogue_test
 
 
 # 设置页面配置
@@ -79,6 +80,9 @@ with st.sidebar:
     
     if st.button("💬 交互式测试", use_container_width=True):
         navigate_to("prompt_interactive_test")
+        
+    if st.button("🗣️ 多轮对话测试", use_container_width=True):
+        navigate_to("prompt_dialogue_test")
         
     if st.button("📈 结果查看", use_container_width=True):
         navigate_to("results_viewer")
@@ -142,10 +146,10 @@ if st.session_state.page == "home":
             navigate_to("prompt_interactive_test")
             
     with col4:
-        st.info("### 🧪 批量测试")
-        st.markdown("选择提示词和测试集，批量测试并分析结果")
-        if st.button("批量测试", key="start_batch_test"):
-            navigate_to("test_runner")
+        st.info("### 🗣️ 多轮对话测试")
+        st.markdown("测试提示词在多轮对话中的效果，评估每轮质量")
+        if st.button("对话测试", key="start_dialogue"):
+            navigate_to("prompt_dialogue_test")
 
 # 渲染其他页面
 elif st.session_state.page == "prompt_editor":
@@ -162,6 +166,9 @@ elif st.session_state.page == "results_viewer":
 
 elif st.session_state.page == "prompt_interactive_test":
     render_prompt_interactive_test()
+
+elif st.session_state.page == "prompt_dialogue_test":
+    render_prompt_dialogue_test()
 
 # 在页面路由部分添加
 elif st.session_state.page == "prompt_optimization":
