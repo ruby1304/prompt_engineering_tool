@@ -6,8 +6,8 @@ from datetime import datetime
 # 从utils导入测试集相关功能
 from utils.test_set_manager import (
     create_new_test_set, merge_test_sets, import_test_set_from_json,
-    add_test_case, update_test_case, delete_test_case, generate_unique_id,
-    filter_test_cases, sort_test_cases, ensure_unique_id
+    import_test_set_from_csv, add_test_case, update_test_case, delete_test_case, 
+    generate_unique_id, filter_test_cases, sort_test_cases, ensure_unique_id
 )
 from utils.test_case_generator import batch_generate_expected_outputs
 from utils.evaluator import PromptEvaluator
@@ -147,22 +147,48 @@ def render_test_set_list_tab():
     # 导入/示例区
     st.markdown("#### 导入/示例")
     with st.expander("导入测试集"):
-        upload_file = st.file_uploader("上传JSON测试集文件", type=["json"])
-        if upload_file is not None:
-            try:
-                uploaded_test_set = json.load(upload_file)
-                processed_test_set = import_test_set_from_json(uploaded_test_set)
-                
-                if st.button("确认导入"):
-                    st.session_state.current_test_set = processed_test_set
-                    if "selected_case_index" in st.session_state:
-                        del st.session_state.selected_case_index
-                    st.success("测试集导入成功")
-                    st.rerun()
-            except json.JSONDecodeError:
-                st.error("文件格式错误，请上传有效的JSON文件")
+        # 选择导入类型
+        import_type = st.radio(
+            "选择导入格式",
+            ["JSON", "CSV"],
+            horizontal=True
+        )
+        
+        if import_type == "JSON":
+            upload_file = st.file_uploader("上传测试集文件", type=["json"], key="json_uploader")
+            if upload_file is not None:
+                try:
+                    uploaded_test_set = json.load(upload_file)
+                    processed_test_set = import_test_set_from_json(uploaded_test_set)
+                    
+                    if st.button("确认导入 JSON"):
+                        st.session_state.current_test_set = processed_test_set
+                        if "selected_case_index" in st.session_state:
+                            del st.session_state.selected_case_index
+                        st.success("测试集导入成功")
+                        st.rerun()
+                except json.JSONDecodeError:
+                    st.error("文件格式错误，请上传有效的JSON文件")
+        else:  # CSV
+            upload_file = st.file_uploader("上传测试集文件", type=["csv"], key="csv_uploader")
+            if upload_file is not None:
+                csv_data = upload_file.getvalue().decode('utf-8-sig')
+                # 提供测试集名称选项
+                test_set_name = st.text_input("测试集名称", placeholder="如不指定，则自动生成")
+                if st.button("确认导入 CSV"):
+                    try:
+                        processed_test_set = import_test_set_from_csv(csv_data, test_set_name)
+                        st.session_state.current_test_set = processed_test_set
+                        if "selected_case_index" in st.session_state:
+                            del st.session_state.selected_case_index
+                        st.success(f"测试集 '{processed_test_set['name']}' 导入成功")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"CSV导入失败: {str(e)}")
+                        st.info("请确保CSV文件具有正确的标题行，参考CSV文件示例结构")
     
-    with st.expander("测试集示例结构"):
+    # 添加CSV示例结构信息
+    with st.expander("JSON测试集示例结构"):
         st.code("""
 {
   "name": "情感分析测试集",
@@ -189,6 +215,26 @@ def render_test_set_list_tab():
   ]
 }
         """, language="json")
+        
+    with st.expander("CSV测试集示例结构"):
+        st.caption("""CSV文件应包含以下列：
+- id: 测试用例ID
+- description: 测试用例描述
+- user_input: 用户输入
+- expected_output: 期望输出
+- accuracy: 准确性评估标准
+- completeness: 完整性评估标准
+- relevance: 相关性评估标准
+- clarity: 清晰度评估标准
+- global_*: 全局变量 (例如：global_language)
+- var_*: 测试用例变量 (例如：var_text)
+        """)
+        
+        st.code("""
+id,description,user_input,expected_output,accuracy,completeness,relevance,clarity,global_language,var_text
+positive_1,强烈正面情感,今天是我人生中最美好的一天，一切都太完美了！,{"sentiment": "positive","score": 0.9},情感判断必须是positive，分数在0.8-1.0之间,必须包含sentiment和score两个字段,响应必须与输入文本的情感相关,输出应清晰易懂,中文,今天是我人生中最美好的一天
+negative_1,强烈负面情感,今天是我最糟糕的一天，所有事情都出错了！,{"sentiment": "negative","score": 0.9},情感判断必须是negative，分数在0.8-1.0之间,必须包含sentiment和score两个字段,响应必须与输入文本的情感相关,输出应清晰易懂,,
+        """, language="text")
 
 
 def render_test_set_edit_tab():

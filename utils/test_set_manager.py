@@ -1,6 +1,8 @@
 import json
 import time
 import uuid
+import csv
+import io
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Set
@@ -187,6 +189,155 @@ def import_test_set_from_json(test_set_data: Dict) -> Dict:
         test_set_data["description"] = "导入的测试集"
     
     return test_set_data
+
+
+def export_test_set_to_csv(test_set: Dict) -> str:
+    """将测试集导出为CSV格式
+    
+    Args:
+        test_set: 测试集字典
+        
+    Returns:
+        CSV格式的字符串
+    """
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # 写入标题行
+    headers = ["id", "description", "user_input", "expected_output", 
+               "accuracy", "completeness", "relevance", "clarity"]
+    
+    # 添加全局变量到标题
+    global_vars = test_set.get("variables", {})
+    global_var_keys = [f"global_{k}" for k in global_vars.keys()]
+    headers.extend(global_var_keys)
+    
+    # 添加所有测试用例的变量键到标题（去重）
+    case_var_keys = set()
+    for case in test_set.get("cases", []):
+        for var_key in case.get("variables", {}).keys():
+            case_var_keys.add(f"var_{var_key}")
+    
+    headers.extend(sorted(list(case_var_keys)))
+    writer.writerow(headers)
+    
+    # 写入所有测试用例
+    for case in test_set.get("cases", []):
+        row = [
+            case.get("id", ""),
+            case.get("description", ""),
+            case.get("user_input", ""),
+            case.get("expected_output", "")
+        ]
+        
+        # 添加评估标准
+        criteria = case.get("evaluation_criteria", {})
+        row.append(criteria.get("accuracy", ""))
+        row.append(criteria.get("completeness", ""))
+        row.append(criteria.get("relevance", ""))
+        row.append(criteria.get("clarity", ""))
+        
+        # 添加全局变量值（保持与标题顺序一致）
+        for var_key in global_vars.keys():
+            row.append(global_vars.get(var_key, ""))
+        
+        # 添加测试用例变量值
+        case_vars = case.get("variables", {})
+        for var_key in sorted(list(case_var_keys)):
+            # 去掉前缀'var_'以匹配实际键
+            actual_key = var_key[4:]
+            row.append(case_vars.get(actual_key, ""))
+        
+        writer.writerow(row)
+    
+    return output.getvalue()
+
+
+def import_test_set_from_csv(csv_data: str, test_set_name: Optional[str] = None) -> Dict:
+    """从CSV数据导入测试集
+    
+    Args:
+        csv_data: CSV格式的字符串
+        test_set_name: 可选的测试集名称
+        
+    Returns:
+        导入的测试集字典
+    """
+    reader = csv.reader(io.StringIO(csv_data))
+    headers = next(reader)  # 读取标题行
+    
+    # 解析标题行
+    base_headers = ["id", "description", "user_input", "expected_output", 
+                   "accuracy", "completeness", "relevance", "clarity"]
+    
+    # 解析全局变量和测试用例变量的标题
+    global_var_keys = [h[7:] for h in headers if h.startswith("global_")]
+    case_var_keys = [h[4:] for h in headers if h.startswith("var_")]
+    
+    # 准备测试集结构
+    test_set = {
+        "name": test_set_name or f"导入测试集_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        "description": f"从CSV导入的测试集 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "variables": {k: "" for k in global_var_keys},
+        "cases": []
+    }
+    
+    # 读取所有行并创建测试用例
+    id_set = set()
+    for row in reader:
+        if not row:  # 跳过空行
+            continue
+            
+        # 确保行数据对齐标题
+        while len(row) < len(headers):
+            row.append("")
+            
+        # 提取基础字段
+        case_id = row[headers.index("id")] if "id" in headers else generate_unique_id()
+        description = row[headers.index("description")] if "description" in headers else ""
+        user_input = row[headers.index("user_input")] if "user_input" in headers else ""
+        expected_output = row[headers.index("expected_output")] if "expected_output" in headers else ""
+        
+        # 提取评估标准
+        evaluation_criteria = {}
+        for criterion in ["accuracy", "completeness", "relevance", "clarity"]:
+            if criterion in headers:
+                evaluation_criteria[criterion] = row[headers.index(criterion)]
+            else:
+                evaluation_criteria[criterion] = f"评估{criterion}"
+        
+        # 提取测试用例变量
+        case_vars = {}
+        for var_key in case_var_keys:
+            var_header = f"var_{var_key}"
+            if var_header in headers:
+                case_vars[var_key] = row[headers.index(var_header)]
+        
+        # 提取全局变量（只从第一行获取）
+        if not test_set["variables"].get(list(global_var_keys)[0], "") if global_var_keys else False:
+            for var_key in global_var_keys:
+                var_header = f"global_{var_key}"
+                if var_header in headers:
+                    test_set["variables"][var_key] = row[headers.index(var_header)]
+        
+        # 创建测试用例并确保ID唯一
+        new_case = {
+            "id": case_id,
+            "description": description,
+            "user_input": user_input,
+            "expected_output": expected_output,
+            "evaluation_criteria": evaluation_criteria,
+            "variables": case_vars
+        }
+        
+        # 确保ID唯一
+        if case_id in id_set:
+            new_case["id"] = generate_unique_id()
+        id_set.add(new_case["id"])
+        
+        test_set["cases"].append(new_case)
+    
+    return test_set
 
 
 def add_test_case(test_set: Dict, case_data: Dict) -> Dict:

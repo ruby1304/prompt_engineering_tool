@@ -447,14 +447,32 @@ def display_test_set_info_editor(test_set: Dict[str, Any], on_save: Callable) ->
                     on_save(test_set)
             
             with button_cols[1]:
-                if st.download_button(
-                    label="📤 导出",
-                    data=json.dumps(test_set, ensure_ascii=False, indent=2),
-                    file_name=f"{test_set.get('name', 'test_set')}.json",
-                    mime="application/json",
-                    use_container_width=True
-                ):
-                    st.success("测试集已导出")
+                # 使用下拉菜单提供导出选项
+                export_option = st.selectbox(
+                    "导出格式",
+                    options=["JSON", "CSV"],
+                    key="export_format"
+                )
+                
+                if export_option == "JSON":
+                    if st.download_button(
+                        label="📤 导出JSON",
+                        data=json.dumps(test_set, ensure_ascii=False, indent=2),
+                        file_name=f"{test_set.get('name', 'test_set')}.json",
+                        mime="application/json",
+                        use_container_width=True
+                    ):
+                        st.success("测试集已导出为JSON")
+                else:  # CSV
+                    from utils.test_set_manager import export_test_set_to_csv
+                    if st.download_button(
+                        label="📤 导出CSV",
+                        data=export_test_set_to_csv(test_set),
+                        file_name=f"{test_set.get('name', 'test_set')}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    ):
+                        st.success("测试集已导出为CSV")
             
             with button_cols[2]:
                 if st.button("🔄 刷新", use_container_width=True):
