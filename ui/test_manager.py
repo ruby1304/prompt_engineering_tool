@@ -315,8 +315,8 @@ def render_batch_operations():
         with param_col3:
             temperature = st.slider("温度", 0.0, 1.0, 0.3, 0.1, key="batch_temp")
         
-        # 四个批量操作按钮
-        btn_col1, btn_col2, btn_col3, btn_col4 = st.columns(4)
+        # 批量操作按钮 (增加为五个，包括新增的批量清空评估标准)
+        btn_col1, btn_col2, btn_col3, btn_col4, btn_col5 = st.columns(5)
         
         # AI生成用户输入
         with btn_col1:
@@ -494,6 +494,56 @@ def render_batch_operations():
                         st.session_state.current_test_set = test_set
                         st.success(f"成功为 {len(cases_to_fill)} 个测试用例生成评估标准")
                         st.rerun()
+                        
+        # 批量清空评估标准（新增功能）
+        with btn_col5:
+            if st.button("🧹 批量清空评估标准", use_container_width=True):
+                cases_with_criteria = [
+                    case for case in test_set.get("cases", []) 
+                    if case.get("evaluation_criteria") and len(case.get("evaluation_criteria", {})) > 0
+                ]
+                
+                if not cases_with_criteria:
+                    st.warning("没有找到含有评估标准的测试用例，无需清空")
+                else:
+                    # 增加确认对话框
+                    if "confirm_clear_criteria" not in st.session_state:
+                        st.session_state.confirm_clear_criteria = False
+                    
+                    st.warning(f"确定要清空所有 {len(cases_with_criteria)} 个测试用例的评估标准吗？此操作无法撤销。")
+                    confirm = st.checkbox("是的，确认清空所有评估标准", key="confirm_clear_criteria_checkbox")
+                    
+                    if confirm:
+                        with st.spinner(f"正在清空 {len(cases_with_criteria)} 个测试用例的评估标准..."):
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            
+                            # 定义默认的空评估标准模板
+                            default_criteria = {
+                                "accuracy": "",
+                                "completeness": "",
+                                "relevance": "",
+                                "clarity": ""
+                            }
+                            
+                            for i, case in enumerate(cases_with_criteria):
+                                case_desc = case.get("description", f"Case {i+1}")
+                                status_text.text(f"正在处理测试用例 {i+1}/{len(cases_with_criteria)}: {case_desc}")
+                                
+                                # 清空评估标准
+                                for test_case in test_set["cases"]:
+                                    if test_case.get("id") == case.get("id"):
+                                        test_case["evaluation_criteria"] = dict(default_criteria)
+                                        break
+                                
+                                progress_bar.progress((i + 1) / len(cases_with_criteria))
+                            
+                            status_text.text("✅ 批量清空评估标准完成!")
+                            save_test_set(test_set["name"], test_set)
+                            st.session_state.current_test_set = test_set
+                            st.session_state.confirm_clear_criteria = False
+                            st.success(f"成功清空 {len(cases_with_criteria)} 个测试用例的评估标准")
+                            st.rerun()
 
 
 def render_test_case_list(test_set):

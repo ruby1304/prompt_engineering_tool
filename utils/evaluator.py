@@ -388,16 +388,56 @@ class PromptEvaluator:
                 response_text = result.get("text", "")
                 # 尝试解析JSON结果
                 try:
+                    # 尝试多种方式提取JSON
+                    json_text = None
+                    
+                    # 方法1：标准markdown代码块方式
                     if "```json" in response_text:
-                        response_text = response_text.split("```json")[1].split("```", 1)[0].strip()
+                        parts = response_text.split("```json")
+                        if len(parts) > 1:
+                            json_text = parts[1].split("```", 1)[0].strip()
+                    
+                    # 方法2：普通代码块方式
                     elif "```" in response_text:
-                        response_text = response_text.split("```", 1)[1].split("```", 1)[0].strip()
-                    test_cases_data = json.loads(response_text)
-                    cases = test_cases_data.get("test_cases", []) if isinstance(test_cases_data, dict) else test_cases_data
-                    return cases
-                except json.JSONDecodeError:
-                    print(f"[TestCaseGen] 错误: 无法解析JSON响应")
-                    return []
+                        parts = response_text.split("```", 1)
+                        if len(parts) > 1:
+                            json_text = parts[1].split("```", 1)[0].strip()
+                    
+                    # 方法3：直接尝试解析整个响应
+                    if not json_text:
+                        json_text = response_text.strip()
+                    
+                    # 尝试修复常见的JSON错误
+                    json_text = self._fix_common_json_errors(json_text)
+                    
+                    # 尝试解析JSON
+                    test_cases_data = json.loads(json_text)
+                    
+                    # 提取测试用例
+                    if isinstance(test_cases_data, dict):
+                        cases = test_cases_data.get("test_cases", [])
+                        if not cases and len(test_cases_data) > 0:
+                            # 可能JSON的结构不是预期的{"test_cases": [...]}, 而是直接包含测试用例
+                            if "id" in test_cases_data:
+                                # 单个测试用例的情况
+                                cases = [test_cases_data]
+                            else:
+                                # 尝试从其他键获取测试用例
+                                for key, value in test_cases_data.items():
+                                    if isinstance(value, list) and len(value) > 0:
+                                        if isinstance(value[0], dict) and "user_input" in value[0]:
+                                            cases = value
+                                            break
+                    else:
+                        # 直接是测试用例列表
+                        cases = test_cases_data
+                    
+                    return cases if isinstance(cases, list) else []
+                    
+                except json.JSONDecodeError as e:
+                    print(f"[TestCaseGen] 错误: 无法解析JSON响应 ({str(e)})")
+                    # 尝试更宽松的解析方式提取部分可用的测试用例
+                    return self._extract_partial_test_cases(response_text)
             except Exception as e:
                 print(f"[TestCaseGen] 错误: {str(e)}")
                 return []
@@ -484,21 +524,32 @@ class PromptEvaluator:
         import asyncio
         try:
             # 尝试获取当前事件循环
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            # 如果没有事件循环，创建一个新的
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        try:
-            # 运行异步函数
-            return loop.run_until_complete(
-                self.generate_test_cases_async(model, test_purpose, example_case, target_count, progress_callback)
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_closed():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+            except RuntimeError:
+                # 如果没有事件循环，创建一个新的
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # 运行异步函数，但不关闭循环
+            result = loop.run_until_complete(
+                self.generate_test_cases_batch_async(
+                    model, 
+                    test_purposes, 
+                    example_case, 
+                    target_count, 
+                    progress_callback
+                )
             )
+            return result
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return {"error": f"生成测试用例时出错: {str(e)}"}
+            return {"error": f"批量生成测试用例时出错: {str(e)}"}
+            # 注意：不在这里关闭事件循环，因为它可能会被其他代码继续使用
 
     async def generate_test_cases_batch_async(self, model: str, test_purposes: List[str], example_case: Dict, target_count_per_purpose: int = 3, progress_callback=None) -> Dict:
         """异步批量生成多组测试用例
@@ -596,15 +647,18 @@ class PromptEvaluator:
         import asyncio
         try:
             # 尝试获取当前事件循环
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            # 如果没有事件循环，创建一个新的
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        try:
-            # 运行异步函数
-            return loop.run_until_complete(
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_closed():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+            except RuntimeError:
+                # 如果没有事件循环，创建一个新的
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # 运行异步函数，但不关闭循环
+            result = loop.run_until_complete(
                 self.generate_test_cases_batch_async(
                     model, 
                     test_purposes, 
@@ -613,25 +667,13 @@ class PromptEvaluator:
                     progress_callback
                 )
             )
+            return result
         except Exception as e:
             import traceback
             traceback.print_exc()
             return {"error": f"批量生成测试用例时出错: {str(e)}"}
+            # 注意：不在这里关闭事件循环，因为它可能会被其他代码继续使用
 
-    def run_evaluation(self, evaluation_tasks: List[Dict]) -> List[Dict]:
-        """同步批量评估，自动调度事件循环，支持并发"""
-        import asyncio
-        try:
-            # 尝试获取当前线程的事件循环
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            # 如果没有事件循环，创建一个新的
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        # 修复：不要关闭循环，让外部决定何时关闭
-        return loop.run_until_complete(self.run_evaluation_async(evaluation_tasks))
-        
     async def run_evaluation_async(self, evaluation_tasks: List[Dict]) -> List[Dict]:
         """异步批量评估多个响应"""
         if self.use_local_evaluation:
@@ -768,6 +810,35 @@ class PromptEvaluator:
             
             return results
 
+    def run_evaluation(self, evaluation_tasks: List[Dict]) -> List[Dict]:
+        """同步批量评估，自动调度事件循环，支持并发"""
+        import asyncio
+        try:
+            # 创建一个新的事件循环，不尝试重用现有循环
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            try:
+                result = loop.run_until_complete(self.run_evaluation_async(evaluation_tasks))
+                return result
+            finally:
+                # 确保在函数返回前不关闭事件循环
+                # 不要在这里关闭事件循环，因为后续操作可能还需要使用它
+                pass
+        except Exception as e:
+            import traceback
+            print(f"批量评估遇到错误: {str(e)}")
+            print(traceback.format_exc())
+            # 如果出现异常，返回使用本地评估的结果
+            return [
+                self.perform_basic_evaluation(
+                    task.get("model_response", ""),
+                    task.get("expected_output", ""),
+                    task.get("prompt", "")
+                )
+                for task in evaluation_tasks
+            ]
+    
     def evaluate_dialogue_turn(self, user_input: str, model_response: str, prompt_template: str, turn_number: int, expected_output: str = "") -> Dict:
         """评估单轮对话质量
         
@@ -861,3 +932,79 @@ class PromptEvaluator:
             evaluation["issues"] = issues
         
         return evaluation
+    
+    def _fix_common_json_errors(self, json_text):
+        """修复常见的JSON格式错误"""
+        # 替换单引号为双引号（但保留转义单引号）
+        import re
+        
+        # 1. 替换未配对的引号
+        quote_count = json_text.count('"') 
+        if quote_count % 2 != 0:
+            # 有未配对的引号，尝试通过在结尾添加引号来修复
+            json_text += '"'
+        
+        # 2. 移除尾部的逗号（如 {"key": "value",} ）
+        json_text = re.sub(r',\s*}', '}', json_text)
+        json_text = re.sub(r',\s*]', ']', json_text)
+        
+        # 3. 修复缺少的大括号或中括号
+        open_braces = json_text.count('{')
+        close_braces = json_text.count('}')
+        if open_braces > close_braces:
+            json_text += "}" * (open_braces - close_braces)
+        
+        open_brackets = json_text.count('[')
+        close_brackets = json_text.count(']')
+        if open_brackets > close_brackets:
+            json_text += "]" * (open_brackets - close_brackets)
+        
+        return json_text
+    
+    def _extract_partial_test_cases(self, text):
+        """尝试从文本中提取部分可用的测试用例"""
+        cases = []
+        import re
+        import time
+        import uuid
+        
+        try:
+            # 寻找可能的测试用例模式，即包含user_input和expected_output的段落
+            user_input_pattern = r'"user_input"\s*:\s*"([^"]*)"|"user_input"\s*:\s*`([^`]*)`'
+            expected_output_pattern = r'"expected_output"\s*:\s*"([^"]*)"|"expected_output"\s*:\s*`([^`]*)`'
+            
+            # 如果存在多个可能的测试用例，尝试分割
+            case_blocks = re.split(r'[\{\}]\s*,\s*[\{\}]', text)
+            
+            for block in case_blocks:
+                user_input_match = re.search(user_input_pattern, block)
+                expected_output_match = re.search(expected_output_pattern, block)
+                
+                if user_input_match and expected_output_match:
+                    # 提取用户输入
+                    user_input = user_input_match.group(1) if user_input_match.group(1) else user_input_match.group(2)
+                    
+                    # 提取期望输出
+                    expected_output = expected_output_match.group(1) if expected_output_match.group(1) else expected_output_match.group(2)
+                    
+                    # 创建基本测试用例
+                    if user_input and expected_output:
+                        case_id = f"gen_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+                        case = {
+                            "id": case_id,
+                            "description": f"自动提取的测试用例 {len(cases)+1}",
+                            "user_input": user_input,
+                            "expected_output": expected_output,
+                            "variables": {},
+                            "evaluation_criteria": {
+                                "accuracy": "评估回答的准确性",
+                                "completeness": "评估回答的完整性",
+                                "relevance": "评估回答的相关性",
+                                "clarity": "评估回答的清晰度"
+                            }
+                        }
+                        cases.append(case)
+        except Exception as e:
+            print(f"[TestCaseGen] 尝试提取测试用例时出错: {str(e)}")
+            
+        return cases

@@ -402,7 +402,6 @@ def run_test(template, model, test_set, model_provider=None, repeat_count=1, tem
             del resp["_eval_input"] # 清理临时数据
     
     results["test_cases"] = all_case_results
-    loop.close()
     return results
 
 def regenerate_expected_output(case: dict, template: dict, model: str, provider: str = None, temperature: float = 0.7):

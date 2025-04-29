@@ -32,6 +32,7 @@ from ui.prompt_batch_ab_test import render_prompt_batch_ab_test
 from ui.provider_manager import render_provider_manager
 from ui.prompt_interactive_test import render_prompt_interactive_test
 from ui.prompt_dialogue_test import render_prompt_dialogue_test
+from ui.prompt_auto_optimization import render_prompt_auto_optimization
 
 
 # 设置页面配置
@@ -90,6 +91,9 @@ with st.sidebar:
     if st.button("🔍 提示词专项优化", use_container_width=True):
         navigate_to("prompt_optimization")
     
+    if st.button("🤖 自动提示词优化", use_container_width=True):
+        navigate_to("prompt_auto_optimization")
+    
     if st.button("🔬 提示词A/B测试", use_container_width=True):
         navigate_to("prompt_ab_test")
 
@@ -146,10 +150,10 @@ if st.session_state.page == "home":
             navigate_to("prompt_interactive_test")
             
     with col4:
-        st.info("### 🗣️ 多轮对话测试")
-        st.markdown("测试提示词在多轮对话中的效果，评估每轮质量")
-        if st.button("对话测试", key="start_dialogue"):
-            navigate_to("prompt_dialogue_test")
+        st.info("### 🤖 自动优化")
+        st.markdown("使用AI自动生成测试、评估结果并持续迭代改进提示词")
+        if st.button("自动优化", key="start_auto"):
+            navigate_to("prompt_auto_optimization")
 
 # 渲染其他页面
 elif st.session_state.page == "prompt_editor":
@@ -173,6 +177,9 @@ elif st.session_state.page == "prompt_dialogue_test":
 # 在页面路由部分添加
 elif st.session_state.page == "prompt_optimization":
     render_prompt_optimization()
+
+elif st.session_state.page == "prompt_auto_optimization":
+    render_prompt_auto_optimization()
 
 elif st.session_state.page == "prompt_ab_test":
     render_prompt_ab_test()
