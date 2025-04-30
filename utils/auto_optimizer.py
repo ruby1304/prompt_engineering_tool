@@ -8,6 +8,7 @@ from models.api_clients import get_client, get_provider_from_model
 from config import load_config, get_system_template
 # 导入新的并行执行器
 from utils.parallel_executor import execute_model, execute_models, execute_model_sync, execute_models_sync
+from utils.optimizer import PromptOptimizer
 
 class AutomaticPromptOptimizer:
     """全自动提示词优化器，支持自动测试用例生成、评估和持续迭代"""
