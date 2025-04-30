@@ -346,7 +346,7 @@ class AutomaticPromptOptimizer:
                 prompt=prompt,
                 provider=self.iter_provider,
                 params={
-                    "temperature": 0.7,
+                    "temperature": 0.9,
                     "max_tokens": 1000
                 }
             )
@@ -425,31 +425,122 @@ class AutomaticPromptOptimizer:
         try:
             self._log("DEBUG", "开始基于测试结果优化提示词")
             
-            # 使用优化器优化提示词
-            optimization_result = self.optimizer.optimize_prompt_sync(
-                original_prompt=self.current_prompt,
-                test_results=test_results,
-                optimization_strategy=self.optimization_strategy
-            )
+            # 检测原始提示词中的变量结构 - 使用正则表达式匹配 {{variable}}
+            import re
+            template_vars = re.findall(r'{{(.*?)}}', self.current_prompt)
+            self._log("DEBUG", f"检测到原始提示词中包含 {len(template_vars)} 个模板变量: {', '.join(template_vars)}")
             
-            if "error" in optimization_result:
-                self._log("ERROR", f"优化提示词时出错: {optimization_result['error']}")
-                return None
-                
-            # 获取优化结果
-            optimized_prompts = optimization_result.get("optimized_prompts", [])
-            if not optimized_prompts:
-                self._log("WARNING", "未能生成优化提示词")
-                return None
-                
-            # 选择第一个优化提示词
-            best_opt = optimized_prompts[0]
-            new_prompt = best_opt.get("prompt", "")
+            # 添加重试机制，最多尝试3次
+            max_retries = 10
+            retry_count = 0
+            optimization_result = None
             
-            if not new_prompt:
-                self._log("WARNING", "优化提示词为空")
+            while retry_count < max_retries:
+                # 使用优化器优化提示词
+                optimization_result = self.optimizer.optimize_prompt_sync(
+                    original_prompt=self.current_prompt,
+                    test_results=test_results,
+                    optimization_strategy=self.optimization_strategy
+                )
+                
+                # 检查结果是否有错误
+                if "error" in optimization_result:
+                    error_msg = optimization_result["error"]
+                    if "空响应内容" in error_msg or "JSON解析失败" in error_msg:
+                        retry_count += 1
+                        self._log("WARNING", f"优化尝试 {retry_count}/{max_retries} 失败: {error_msg}，准备重试...")
+                        continue
+                    else:
+                        # 如果是其他错误，不重试
+                        self._log("ERROR", f"优化提示词时出错: {error_msg}")
+                        return None
+                
+                # 获取优化结果
+                optimized_prompts = optimization_result.get("optimized_prompts", [])
+                if not optimized_prompts:
+                    retry_count += 1
+                    self._log("WARNING", f"优化尝试 {retry_count}/{max_retries} 未生成优化提示词，准备重试...")
+                    continue
+                
+                # 选择第一个优化提示词
+                best_opt = optimized_prompts[0]
+                new_prompt = best_opt.get("prompt", "")
+                
+                if not new_prompt:
+                    retry_count += 1
+                    self._log("WARNING", f"优化尝试 {retry_count}/{max_retries} 生成了空提示词，准备重试...")
+                    continue
+                
+                # 如果执行到这里，表示成功获得优化提示词，跳出循环
+                break
+            
+            # 如果所有尝试都失败，记录错误并返回 None
+            if retry_count == max_retries:
+                self._log("ERROR", f"在 {max_retries} 次尝试后仍未能成功优化提示词")
                 return None
                 
+            # 检查优化后的提示词是否保留了所有原始变量
+            # 如果有变量丢失，尝试恢复它们
+            if template_vars:
+                missing_vars = []
+                for var in template_vars:
+                    var_pattern = r'{{' + re.escape(var) + r'}}'
+                    if not re.search(var_pattern, new_prompt):
+                        missing_vars.append(var)
+                
+                if missing_vars:
+                    self._log("WARNING", f"优化后提示词中缺少以下变量: {', '.join(missing_vars)}")
+                    
+                    # 尝试恢复丢失的变量 - 这是一个简化的修复方法
+                    # 如果原始提示词中变量在特定的位置或上下文中，我们应该尝试保持这个上下文
+                    for var in missing_vars:
+                        # 查找变量在原始提示词中的上下文
+                        var_pattern = r'{{' + re.escape(var) + r'}}'
+                        var_match = re.search(r'(.{0,30})' + var_pattern + r'(.{0,30})', self.current_prompt)
+                        if var_match:
+                            # 获取变量前后的上下文
+                            before_context = var_match.group(1)
+                            after_context = var_match.group(2)
+                            
+                            # 尝试找到适合插入变量的位置
+                            # 这里使用一个简化的启发式方法：
+                            # 查找上下文前部分的最后出现位置，或上下文后部分的第一次出现位置
+                            
+                            # 尝试查找前部分上下文
+                            if before_context and len(before_context.strip()) > 5:
+                                last_before = new_prompt.rfind(before_context.strip())
+                                if last_before != -1:
+                                    insert_pos = last_before + len(before_context)
+                                    new_prompt = new_prompt[:insert_pos] + f" {{{{{var}}}}} " + new_prompt[insert_pos:]
+                                    self._log("INFO", f"在位置 {insert_pos} 恢复了变量 {{{{{var}}}}}")
+                                    continue
+                            
+                            # 尝试查找后部分上下文
+                            if after_context and len(after_context.strip()) > 5:
+                                first_after = new_prompt.find(after_context.strip())
+                                if first_after != -1:
+                                    insert_pos = first_after
+                                    new_prompt = new_prompt[:insert_pos] + f" {{{{{var}}}}} " + new_prompt[insert_pos:]
+                                    self._log("INFO", f"在位置 {insert_pos} 恢复了变量 {{{{{var}}}}}")
+                                    continue
+                            
+                            # 如果无法找到合适的位置，则添加到提示词末尾
+                            self._log("WARNING", f"无法找到合适位置恢复变量 {{{{{var}}}}}，将添加到提示词末尾")
+                            new_prompt = new_prompt + f"\n\n请使用 {{{{{var}}}}} 变量替换相应内容。"
+                
+                # 进行最终检查，确保所有变量都已恢复
+                all_recovered = True
+                for var in template_vars:
+                    var_pattern = r'{{' + re.escape(var) + r'}}'
+                    if not re.search(var_pattern, new_prompt):
+                        all_recovered = False
+                        break
+                
+                if all_recovered:
+                    self._log("INFO", "成功恢复所有模板变量")
+                else:
+                    self._log("WARNING", "部分模板变量可能未正确恢复，请检查优化后的提示词")
+                    
             self._log("INFO", f"提示词优化成功，新长度: {len(new_prompt)} 字符")
             self._log("DEBUG", f"优化策略: {best_opt.get('strategy', '未指定')}")
             self._log("DEBUG", f"解决的问题: {best_opt.get('problem_addressed', '未指定')}")

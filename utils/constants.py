@@ -31,7 +31,7 @@ DEFAULT_WITH_SAMPLE_EVALUATION_CRITERIA = {
 # 默认模型参数
 DEFAULT_GENERATION_PARAMS = {
     "temperature": 0.7,
-    "max_tokens": 2000
+    "max_tokens": 8000
 }
 
 DEFAULT_EVALUATION_PARAMS = {

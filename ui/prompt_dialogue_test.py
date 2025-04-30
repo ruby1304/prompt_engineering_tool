@@ -233,7 +233,7 @@ def render_prompt_dialogue_test():
                     messages.append({"role": "system", "content": prompt_template})
                     
                     # 调用模型
-                    params = {"temperature": temperature, "max_tokens": 2000}
+                    params = {"temperature": temperature, "max_tokens": 8000}
                     
                     # 添加新的用户消息
                     messages.append({"role": "user", "content": user_input})
