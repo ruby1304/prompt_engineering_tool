@@ -4,6 +4,9 @@ from typing import Dict, Any, Callable, Optional
 from models.api_clients import get_client
 from utils.common import render_prompt_template, regenerate_expected_output
 from utils.evaluator import PromptEvaluator
+# Import new utility functions and constants
+from utils.constants import DEFAULT_GENERATION_PARAMS
+from utils.helpers import parse_json_response, ensure_test_case_fields, ProgressTracker
 
 
 def generate_ai_expected_output(
@@ -48,8 +51,9 @@ def generate_ai_expected_output(
             test_set = {"variables": {}}  # 创建一个空的测试集，用于提供变量结构
             prompt_template = render_prompt_template(template, test_set, case)
             
-            # 准备参数
-            params = {"temperature": temperature, "max_tokens": 1000}
+            # 使用默认参数，但覆盖温度
+            params = dict(DEFAULT_GENERATION_PARAMS)
+            params["temperature"] = temperature
             
             # 调用模型
             if provider in ["openai", "xai"]:
@@ -136,41 +140,23 @@ async def generate_user_inputs(test_purpose: str, count: int = 5) -> Dict[str, A
         
         response_text = result.get("text", "")
         
-        # 尝试解析JSON响应
-        try:
-            import json
-            import re
-            
-            # 尝试找到JSON部分并解析
-            if "```json" in response_text:
-                json_text = response_text.split("```json")[1].split("```")[0].strip()
-            elif "```" in response_text:
-                json_text = response_text.split("```")[1].strip()
-            else:
-                json_text = response_text
-                
-            # 清理JSON文本
-            json_text = re.sub(r'[\n\r\t]', ' ', json_text)
-            json_text = re.sub(r'\s+', ' ', json_text)
-            
-            result_data = json.loads(json_text)
-            
-            # 提取user_inputs字段
-            if isinstance(result_data, dict) and "user_inputs" in result_data:
-                return {"user_inputs": result_data["user_inputs"]}
-            elif isinstance(result_data, list):
-                return {"user_inputs": result_data}
-            else:
-                return {"error": "响应格式不正确，无法提取用户输入"}
-                
-        except json.JSONDecodeError:
+        # 使用通用JSON解析函数解析响应
+        parsed_data, error = parse_json_response(response_text)
+        
+        if error:
             return {
-                "error": "无法解析生成的JSON响应",
+                "error": f"无法解析生成的JSON响应: {error}",
                 "raw_response": response_text
             }
-        except Exception as e:
-            return {"error": f"处理响应时出错: {str(e)}"}
             
+        # 提取user_inputs字段
+        if isinstance(parsed_data, dict) and "user_inputs" in parsed_data:
+            return {"user_inputs": parsed_data["user_inputs"]}
+        elif isinstance(parsed_data, list):
+            return {"user_inputs": parsed_data}
+        else:
+            return {"error": "响应格式不正确，无法提取用户输入"}
+                
     except Exception as e:
         return {"error": f"生成用户输入时出错: {str(e)}"}
 
@@ -205,14 +191,19 @@ def batch_generate_expected_outputs(
     if not cases_to_fill:
         return {"status": "warning", "message": "没有找到需要生成预期输出的测试用例"}
     
+    # 使用统一的进度跟踪器来管理进度
+    if progress_callback:
+        progress_tracker = ProgressTracker(
+            total_steps=len(cases_to_fill),
+            callback=lambda current, total, desc: progress_callback(current, total),
+            description="生成期望输出"
+        )
+    else:
+        progress_tracker = None
+    
     processed_count = 0
     success_count = 0
     errors = []
-    
-    # 更新进度的帮助函数
-    def update_progress():
-        if progress_callback:
-            progress_callback(processed_count, len(cases_to_fill))
     
     # 处理每个测试用例
     for i, case in enumerate(cases_to_fill):
@@ -227,7 +218,10 @@ def batch_generate_expected_outputs(
         )
         
         processed_count += 1
-        update_progress()
+        
+        # 更新进度
+        if progress_tracker:
+            progress_tracker.update(1)
         
         if "error" in result and result["error"]:
             errors.append({
@@ -246,8 +240,8 @@ def batch_generate_expected_outputs(
                     break
     
     # 确保最终进度为100%
-    if progress_callback:
-        progress_callback(len(cases_to_fill), len(cases_to_fill))
+    if progress_tracker:
+        progress_tracker.complete()
     
     return {
         "status": "success" if success_count > 0 else "error",
@@ -256,3 +250,131 @@ def batch_generate_expected_outputs(
         "success": success_count,
         "errors": errors if errors else None
     }
+
+
+def generate_test_cases_for_prompt(
+    template: Dict[str, Any],
+    test_purpose: str, 
+    model: str, 
+    provider: str,
+    count: int = 5,
+    progress_callback: Optional[Callable] = None
+) -> Dict[str, Any]:
+    """为特定提示词模板生成完整的测试用例（包括用户输入和预期输出）
+    
+    Args:
+        template: 提示词模板
+        test_purpose: 测试目的
+        model: 模型名称
+        provider: 提供商名称
+        count: 要生成的测试用例数量
+        progress_callback: 进度回调函数
+    
+    Returns:
+        包含生成的测试用例的字典
+    """
+    try:
+        # 创建进度跟踪器
+        total_steps = 2  # 两个主要步骤：生成输入和生成输出
+        
+        if progress_callback:
+            progress_tracker = ProgressTracker(
+                total_steps=total_steps,
+                callback=lambda current, total, desc: progress_callback(
+                    int((current / total) * 100),  # 转换为百分比
+                    desc
+                ),
+                description="初始化"
+            )
+        else:
+            progress_tracker = None
+            
+        # 步骤1：生成用户输入
+        if progress_tracker:
+            progress_tracker.update(0, "正在生成用户输入...")
+            
+        # 创建一个新的事件循环
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # 生成用户输入
+        inputs_result = loop.run_until_complete(generate_user_inputs(test_purpose, count))
+        
+        if "error" in inputs_result:
+            if progress_tracker:
+                progress_tracker.complete("生成失败")
+            return {
+                "status": "error",
+                "message": f"生成用户输入失败: {inputs_result.get('error')}",
+                "test_cases": []
+            }
+            
+        user_inputs = inputs_result.get("user_inputs", [])
+        if not user_inputs:
+            if progress_tracker:
+                progress_tracker.complete("生成失败")
+            return {
+                "status": "error",
+                "message": "未能生成任何用户输入",
+                "test_cases": []
+            }
+            
+        # 步骤2：为每个用户输入生成测试用例并生成预期输出
+        if progress_tracker:
+            progress_tracker.update(1, "正在生成预期输出...")
+            
+        # 创建测试用例
+        test_cases = []
+        for idx, user_input in enumerate(user_inputs[:count]):  # 确保不超过请求的数量
+            # 创建基础测试用例
+            test_case = {
+                "description": f"测试用例 {idx+1}: {test_purpose[:30]}...",
+                "user_input": user_input,
+            }
+            
+            # 使用辅助函数确保所有必要字段
+            test_case = ensure_test_case_fields(test_case)
+            test_cases.append(test_case)
+        
+        # 创建临时测试集
+        temp_test_set = {
+            "name": f"自动生成的测试集: {test_purpose}",
+            "description": f"基于测试目的 '{test_purpose}' 自动生成的测试集",
+            "variables": {},
+            "cases": test_cases
+        }
+        
+        # 生成预期输出
+        output_result = batch_generate_expected_outputs(
+            test_set=temp_test_set,
+            model=model,
+            provider=provider,
+            template=template,
+            progress_callback=None  # 我们在最外层已经有了进度跟踪
+        )
+        
+        # 更新进度
+        if progress_tracker:
+            progress_tracker.complete("生成完成")
+            
+        # 返回结果
+        return {
+            "status": "success" if output_result.get("success", 0) > 0 else "error",
+            "message": f"成功生成了 {output_result.get('success', 0)} 个完整测试用例",
+            "test_cases": temp_test_set.get("cases", []),
+            "errors": output_result.get("errors", [])
+        }
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        
+        # 确保进度完成
+        if progress_tracker:
+            progress_tracker.complete("生成失败")
+            
+        return {
+            "status": "error",
+            "message": f"生成测试用例时发生错误: {str(e)}",
+            "test_cases": []
+        }

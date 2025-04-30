@@ -6,6 +6,18 @@ from config import load_config, get_api_key, get_system_template
 from models.token_counter import count_tokens
 # Import the new parallel executor
 from utils.parallel_executor import execute_model, execute_models, execute_model_sync, execute_models_sync
+# Import new constants and helpers
+from utils.constants import (
+    DEFAULT_EVALUATION_CRITERIA, 
+    DEFAULT_NO_SAMPLE_EVALUATION_CRITERIA,
+    DEFAULT_WITH_SAMPLE_EVALUATION_CRITERIA,
+    DEFAULT_EVALUATION_PARAMS
+)
+from utils.helpers import (
+    parse_json_response, 
+    ensure_test_case_fields, 
+    calculate_prompt_efficiency
+)
 
 class PromptEvaluator:
     """提示词评估引擎"""
@@ -46,64 +58,44 @@ class PromptEvaluator:
             .replace("{{expected_output}}", expected_output)\
             .replace("{{evaluation_criteria}}", json.dumps(criteria, ensure_ascii=False, indent=2))
         
-        evaluation_params = {
-            "temperature": 0.2,  # 低温度以获得一致的评估
-            "max_tokens": 1500
-        }
-        
         try:
             # 使用并行执行器进行模型调用
             result = await execute_model(
                 self.evaluator_model,
                 prompt=evaluation_prompt,
                 provider=self.provider,
-                params=evaluation_params
+                params=DEFAULT_EVALUATION_PARAMS
             )
             
             eval_text = result.get("text", "")
             
             # 尝试解析JSON结果
-            try:
-                # 清理可能的前后缀文本
-                if "```json" in eval_text:
-                    eval_text = eval_text.split("```json")[1].split("```")[0].strip()
-                elif "```" in eval_text:
-                    eval_text = eval_text.split("```")[1].split("```")[0].strip()
-                
-                eval_data = json.loads(eval_text)
-                
-                # 添加提示词token信息
-                eval_data["prompt_info"] = {
-                    "token_count": prompt_tokens,
-                }
-                
-                # 如果评估结果中没有提示词效率评分，添加一个
-                if "scores" in eval_data and "prompt_efficiency" not in eval_data["scores"]:
-                    # 线性评分：提示词越短，评分越高
-                    if prompt_tokens == 0:
-                        prompt_efficiency = 100  # 空提示词，给满分(实际上这种情况很少)
-                    else:
-                        # 线性公式：100 - (tokens - 100) * 0.1, 限定在40-100之间
-                        # 100个tokens及以下得满分，之后每增加10个tokens减1分
-                        base_score = 100
-                        token_penalty = max(0, prompt_tokens - 100) * 0.1
-                        prompt_efficiency = max(40, min(100, base_score - token_penalty))
-                    
-                    eval_data["scores"]["prompt_efficiency"] = prompt_efficiency
-                    
-                    # 重新计算总体分数，包含提示词效率
-                    if "overall_score" in eval_data:
-                        scores = eval_data["scores"]
-                        total = sum(scores.values())
-                        eval_data["overall_score"] = int(total / len(scores))
-                
-                return eval_data
-            except json.JSONDecodeError:
+            eval_data, error = parse_json_response(eval_text)
+            
+            if error:
                 # 解析失败，返回错误信息并使用本地评估作为备选
                 local_result = self.perform_basic_evaluation(model_response, expected_output, prompt)
-                local_result["error"] = "评估结果格式错误，已切换到本地评估"
+                local_result["error"] = f"评估结果格式错误: {error}，已切换到本地评估"
                 local_result["raw_response"] = eval_text
                 return local_result
+            
+            # 添加提示词token信息
+            eval_data["prompt_info"] = {
+                "token_count": prompt_tokens,
+            }
+            
+            # 如果评估结果中没有提示词效率评分，添加一个
+            if "scores" in eval_data and "prompt_efficiency" not in eval_data["scores"]:
+                prompt_efficiency = calculate_prompt_efficiency(prompt_tokens)
+                eval_data["scores"]["prompt_efficiency"] = prompt_efficiency
+                
+                # 重新计算总体分数，包含提示词效率
+                if "overall_score" in eval_data:
+                    scores = eval_data["scores"]
+                    total = sum(scores.values())
+                    eval_data["overall_score"] = int(total / len(scores))
+            
+            return eval_data
                 
         except Exception as e:
             # 发生错误时使用本地评估作为备选
@@ -190,64 +182,44 @@ class PromptEvaluator:
             .replace("{{expected_output}}", expected_output)\
             .replace("{{evaluation_criteria}}", json.dumps(criteria, ensure_ascii=False, indent=2))
         
-        evaluation_params = {
-            "temperature": 0.2,  # 低温度以获得一致的评估
-            "max_tokens": 1500
-        }
-        
         try:
             # 使用并行执行器的同步版本
             result = execute_model_sync(
                 self.evaluator_model,
                 prompt=evaluation_prompt,
                 provider=self.provider,
-                params=evaluation_params
+                params=DEFAULT_EVALUATION_PARAMS
             )
             
             eval_text = result.get("text", "")
             
             # 尝试解析JSON结果
-            try:
-                # 清理可能的前后缀文本
-                if "```json" in eval_text:
-                    eval_text = eval_text.split("```json")[1].split("```")[0].strip()
-                elif "```" in eval_text:
-                    eval_text = eval_text.split("```")[1].split("```")[0].strip()
-                
-                eval_data = json.loads(eval_text)
-                
-                # 添加提示词token信息
-                eval_data["prompt_info"] = {
-                    "token_count": prompt_tokens,
-                }
-                
-                # 如果评估结果中没有提示词效率评分，添加一个
-                if "scores" in eval_data and "prompt_efficiency" not in eval_data["scores"]:
-                    # 线性评分：提示词越短，评分越高
-                    if prompt_tokens == 0:
-                        prompt_efficiency = 100  # 空提示词，给满分(实际上这种情况很少)
-                    else:
-                        # 线性公式：100 - (tokens - 100) * 0.1, 限定在40-100之间
-                        # 100个tokens及以下得满分，之后每增加10个tokens减1分
-                        base_score = 100
-                        token_penalty = max(0, prompt_tokens - 100) * 0.1
-                        prompt_efficiency = max(40, min(100, base_score - token_penalty))
-                    
-                    eval_data["scores"]["prompt_efficiency"] = prompt_efficiency
-                    
-                    # 重新计算总体分数，包含提示词效率
-                    if "overall_score" in eval_data:
-                        scores = eval_data["scores"]
-                        total = sum(scores.values())
-                        eval_data["overall_score"] = int(total / len(scores))
-                
-                return eval_data
-            except json.JSONDecodeError:
+            eval_data, error = parse_json_response(eval_text)
+            
+            if error:
                 # 解析失败，返回错误信息并使用本地评估作为备选
                 local_result = self.perform_basic_evaluation(model_response, expected_output, prompt)
-                local_result["error"] = "评估结果格式错误，已切换到本地评估"
+                local_result["error"] = f"评估结果格式错误: {error}，已切换到本地评估"
                 local_result["raw_response"] = eval_text
                 return local_result
+            
+            # 添加提示词token信息
+            eval_data["prompt_info"] = {
+                "token_count": prompt_tokens,
+            }
+            
+            # 如果评估结果中没有提示词效率评分，添加一个
+            if "scores" in eval_data and "prompt_efficiency" not in eval_data["scores"]:
+                prompt_efficiency = calculate_prompt_efficiency(prompt_tokens)
+                eval_data["scores"]["prompt_efficiency"] = prompt_efficiency
+                
+                # 重新计算总体分数，包含提示词效率
+                if "overall_score" in eval_data:
+                    scores = eval_data["scores"]
+                    total = sum(scores.values())
+                    eval_data["overall_score"] = int(total / len(scores))
+            
+            return eval_data
                 
         except Exception as e:
             # 发生错误时使用本地评估作为备选
@@ -278,16 +250,7 @@ class PromptEvaluator:
             
             # 计算提示词效率得分 (0-100分) - 线性计算，字符数越少分数越高
             prompt_tokens = count_tokens(prompt) if prompt else 0
-            
-            # 线性评分：基准为500 tokens，每增减1个token相应减增0.1分，最低40分，最高100分
-            if prompt_tokens == 0:
-                prompt_efficiency = 100  # 空提示词，给满分(实际上这种情况很少)
-            else:
-                # 线性公式：100 - (tokens - 100) * 0.1, 限定在40-100之间
-                # 100个tokens及以下得满分，之后每增加10个tokens减1分
-                base_score = 100
-                token_penalty = max(0, prompt_tokens - 100) * 0.1
-                prompt_efficiency = max(40, min(100, base_score - token_penalty))
+            prompt_efficiency = calculate_prompt_efficiency(prompt_tokens)
                 
             # 计算总体分数，将prompt效率作为评估因素
             overall_score = int((accuracy_score + completeness + relevance + clarity + prompt_efficiency) / 5)
@@ -372,10 +335,9 @@ class PromptEvaluator:
                 .replace("{{model}}", model)\
                 .replace("{{test_purpose}}", purpose)\
                 .replace("{{example_test_case}}", example_text)
-            generator_params = {
-                "temperature": 0.7,
-                "max_tokens": 2000
-            }
+                
+            # 使用默认参数
+            from utils.constants import DEFAULT_GENERATION_PARAMS
             
             try:
                 # 使用并行执行器
@@ -383,61 +345,39 @@ class PromptEvaluator:
                     self.evaluator_model,
                     prompt=generator_prompt,
                     provider=self.provider,
-                    params=generator_params
+                    params=DEFAULT_GENERATION_PARAMS
                 )
                 response_text = result.get("text", "")
+                
                 # 尝试解析JSON结果
-                try:
-                    # 尝试多种方式提取JSON
-                    json_text = None
-                    
-                    # 方法1：标准markdown代码块方式
-                    if "```json" in response_text:
-                        parts = response_text.split("```json")
-                        if len(parts) > 1:
-                            json_text = parts[1].split("```", 1)[0].strip()
-                    
-                    # 方法2：普通代码块方式
-                    elif "```" in response_text:
-                        parts = response_text.split("```", 1)
-                        if len(parts) > 1:
-                            json_text = parts[1].split("```", 1)[0].strip()
-                    
-                    # 方法3：直接尝试解析整个响应
-                    if not json_text:
-                        json_text = response_text.strip()
-                    
-                    # 尝试修复常见的JSON错误
-                    json_text = self._fix_common_json_errors(json_text)
-                    
-                    # 尝试解析JSON
-                    test_cases_data = json.loads(json_text)
-                    
-                    # 提取测试用例
-                    if isinstance(test_cases_data, dict):
-                        cases = test_cases_data.get("test_cases", [])
-                        if not cases and len(test_cases_data) > 0:
-                            # 可能JSON的结构不是预期的{"test_cases": [...]}, 而是直接包含测试用例
-                            if "id" in test_cases_data:
-                                # 单个测试用例的情况
-                                cases = [test_cases_data]
-                            else:
-                                # 尝试从其他键获取测试用例
-                                for key, value in test_cases_data.items():
-                                    if isinstance(value, list) and len(value) > 0:
-                                        if isinstance(value[0], dict) and "user_input" in value[0]:
-                                            cases = value
-                                            break
-                    else:
-                        # 直接是测试用例列表
-                        cases = test_cases_data
-                    
-                    return cases if isinstance(cases, list) else []
-                    
-                except json.JSONDecodeError as e:
-                    print(f"[TestCaseGen] 错误: 无法解析JSON响应 ({str(e)})")
+                test_cases_data, error = parse_json_response(response_text)
+                
+                if error:
+                    print(f"[TestCaseGen] 错误: {error}")
                     # 尝试更宽松的解析方式提取部分可用的测试用例
                     return self._extract_partial_test_cases(response_text)
+                
+                # 提取测试用例
+                cases = []
+                if isinstance(test_cases_data, dict):
+                    cases = test_cases_data.get("test_cases", [])
+                    if not cases and len(test_cases_data) > 0:
+                        # 可能JSON的结构不是预期的{"test_cases": [...]}, 而是直接包含测试用例
+                        if "id" in test_cases_data:
+                            # 单个测试用例的情况
+                            cases = [test_cases_data]
+                        else:
+                            # 尝试从其他键获取测试用例
+                            for key, value in test_cases_data.items():
+                                if isinstance(value, list) and len(value) > 0:
+                                    if isinstance(value[0], dict) and "user_input" in value[0]:
+                                        cases = value
+                                        break
+                else:
+                    # 直接是测试用例列表
+                    cases = test_cases_data if isinstance(test_cases_data, list) else []
+                
+                return cases
             except Exception as e:
                 print(f"[TestCaseGen] 错误: {str(e)}")
                 return []
@@ -464,22 +404,8 @@ class PromptEvaluator:
                 for c in batch_cases:
                     key = c.get("user_input", "")+"|||"+c.get("expected_output", "")
                     if key not in exist_keys:
-                        # 确保有唯一ID
-                        if "id" not in c or not c["id"]:
-                            import time, uuid
-                            c["id"] = f"gen_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-                        # 确保有评估标准
-                        if "evaluation_criteria" not in c or not c["evaluation_criteria"]:
-                            c["evaluation_criteria"] = {
-                                "accuracy": "评估回答的准确性",
-                                "completeness": "评估回答的完整性",
-                                "relevance": "评估回答的相关性",
-                                "clarity": "评估回答的清晰度"
-                            }
-                        # 确保有变量字段
-                        if "variables" not in c:
-                            c["variables"] = {}
-                        
+                        # 确保测试用例包含所有必要字段
+                        c = ensure_test_case_fields(c)
                         all_cases.append(c)
                         exist_keys.add(key)
                         added_count += 1
@@ -534,11 +460,11 @@ class PromptEvaluator:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
             
-            # 运行异步函数，但不关闭循环
+            # 运行异步函数
             result = loop.run_until_complete(
-                self.generate_test_cases_batch_async(
+                self.generate_test_cases_async(
                     model, 
-                    test_purposes, 
+                    test_purpose, 
                     example_case, 
                     target_count, 
                     progress_callback
@@ -548,8 +474,7 @@ class PromptEvaluator:
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return {"error": f"批量生成测试用例时出错: {str(e)}"}
-            # 注意：不在这里关闭事件循环，因为它可能会被其他代码继续使用
+            return {"error": f"生成测试用例时出错: {str(e)}"}
 
     async def generate_test_cases_batch_async(self, model: str, test_purposes: List[str], example_case: Dict, target_count_per_purpose: int = 3, progress_callback=None) -> Dict:
         """异步批量生成多组测试用例
@@ -657,7 +582,7 @@ class PromptEvaluator:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
             
-            # 运行异步函数，但不关闭循环
+            # 运行异步函数
             result = loop.run_until_complete(
                 self.generate_test_cases_batch_async(
                     model, 
@@ -672,7 +597,6 @@ class PromptEvaluator:
             import traceback
             traceback.print_exc()
             return {"error": f"批量生成测试用例时出错: {str(e)}"}
-            # 注意：不在这里关闭事件循环，因为它可能会被其他代码继续使用
 
     async def run_evaluation_async(self, evaluation_tasks: List[Dict]) -> List[Dict]:
         """异步批量评估多个响应"""
@@ -708,10 +632,7 @@ class PromptEvaluator:
                 "model": self.evaluator_model,
                 "provider": self.provider,
                 "prompt": evaluation_prompt,
-                "params": {
-                    "temperature": 0.2,
-                    "max_tokens": 1500
-                },
+                "params": DEFAULT_EVALUATION_PARAMS,
                 "context": {
                     "model_response": model_response,
                     "expected_output": expected_output,
@@ -737,13 +658,16 @@ class PromptEvaluator:
                     try:
                         eval_text = response.get("text", "")
                         
-                        # 清理可能的前后缀文本
-                        if "```json" in eval_text:
-                            eval_text = eval_text.split("```json")[1].split("```")[0].strip()
-                        elif "```" in eval_text:
-                            eval_text = eval_text.split("```")[1].split("```")[0].strip()
+                        # 解析JSON结果
+                        eval_data, error = parse_json_response(eval_text)
                         
-                        eval_data = json.loads(eval_text)
+                        if error:
+                            # 解析失败，使用本地评估
+                            local_result = self.perform_basic_evaluation(model_response, expected_output, prompt)
+                            local_result["error"] = f"评估结果解析失败: {error}"
+                            local_result["raw_response"] = eval_text
+                            results.append(local_result)
+                            continue
                         
                         # 添加提示词token信息
                         prompt_tokens = count_tokens(prompt)
@@ -753,16 +677,7 @@ class PromptEvaluator:
                         
                         # 如果评估结果中没有提示词效率评分，添加一个
                         if "scores" in eval_data and "prompt_efficiency" not in eval_data["scores"]:
-                            # 线性评分：提示词越短，评分越高
-                            if prompt_tokens == 0:
-                                prompt_efficiency = 100  # 空提示词，给满分(实际上这种情况很少)
-                            else:
-                                # 线性公式：100 - (tokens - 100) * 0.1, 限定在40-100之间
-                                # 100个tokens及以下得满分，之后每增加10个tokens减1分
-                                base_score = 100
-                                token_penalty = max(0, prompt_tokens - 100) * 0.1
-                                prompt_efficiency = max(40, min(100, base_score - token_penalty))
-                            
+                            prompt_efficiency = calculate_prompt_efficiency(prompt_tokens)
                             eval_data["scores"]["prompt_efficiency"] = prompt_efficiency
                             
                             # 重新计算总体分数，包含提示词效率
@@ -822,8 +737,7 @@ class PromptEvaluator:
                 result = loop.run_until_complete(self.run_evaluation_async(evaluation_tasks))
                 return result
             finally:
-                # 确保在函数返回前不关闭事件循环
-                # 不要在这里关闭事件循环，因为后续操作可能还需要使用它
+                # 不关闭事件循环，后续操作可能还需要使用
                 pass
         except Exception as e:
             import traceback
@@ -859,25 +773,13 @@ class PromptEvaluator:
         is_no_sample = expected_output == ""
         
         if is_no_sample:
-            # 无样本评估时使用简化的评估标准，专注于用户体验相关维度
-            evaluation_criteria = {
-                "relevance": "模型响应与用户提问的相关性(0-100分)",
-                "helpfulness": "模型响应对解决用户问题的帮助程度(0-100分)",
-                "coherence": "模型回复的连贯性和逻辑性(0-100分)",
-                "prompt_following": "模型遵循提示词指令的程度(0-100分)"
-            }
+            # 无样本评估时使用简化的评估标准
+            evaluation_criteria = DEFAULT_NO_SAMPLE_EVALUATION_CRITERIA
             # 设置通用期望输出
             expected_output = f"回合 {turn_number}：根据提示词和用户问题给出有帮助、相关且连贯的回答"
         else:
             # 有样本评估时使用完整的评估标准
-            evaluation_criteria = {
-                "relevance": "模型响应与用户提问的相关性(0-100分)",
-                "helpfulness": "模型响应对解决用户问题的帮助程度(0-100分)",
-                "accuracy": "模型响应中信息的准确性(0-100分)",
-                "prompt_following": "模型遵循提示词指令的程度(0-100分)",
-                "consistency": "模型回复与之前对话的一致性(0-100分)",
-                "coherence": "模型回复的连贯性和逻辑性(0-100分)"
-            }
+            evaluation_criteria = DEFAULT_WITH_SAMPLE_EVALUATION_CRITERIA
         
         # 调用评估器
         evaluation = self.evaluate_response_sync(
@@ -933,34 +835,6 @@ class PromptEvaluator:
         
         return evaluation
     
-    def _fix_common_json_errors(self, json_text):
-        """修复常见的JSON格式错误"""
-        # 替换单引号为双引号（但保留转义单引号）
-        import re
-        
-        # 1. 替换未配对的引号
-        quote_count = json_text.count('"') 
-        if quote_count % 2 != 0:
-            # 有未配对的引号，尝试通过在结尾添加引号来修复
-            json_text += '"'
-        
-        # 2. 移除尾部的逗号（如 {"key": "value",} ）
-        json_text = re.sub(r',\s*}', '}', json_text)
-        json_text = re.sub(r',\s*]', ']', json_text)
-        
-        # 3. 修复缺少的大括号或中括号
-        open_braces = json_text.count('{')
-        close_braces = json_text.count('}')
-        if open_braces > close_braces:
-            json_text += "}" * (open_braces - close_braces)
-        
-        open_brackets = json_text.count('[')
-        close_brackets = json_text.count(']')
-        if open_brackets > close_brackets:
-            json_text += "]" * (open_brackets - close_brackets)
-        
-        return json_text
-    
     def _extract_partial_test_cases(self, text):
         """尝试从文本中提取部分可用的测试用例"""
         cases = []
@@ -989,20 +863,12 @@ class PromptEvaluator:
                     
                     # 创建基本测试用例
                     if user_input and expected_output:
-                        case_id = f"gen_{int(time.time())}_{uuid.uuid4().hex[:8]}"
                         case = {
-                            "id": case_id,
-                            "description": f"自动提取的测试用例 {len(cases)+1}",
                             "user_input": user_input,
                             "expected_output": expected_output,
-                            "variables": {},
-                            "evaluation_criteria": {
-                                "accuracy": "评估回答的准确性",
-                                "completeness": "评估回答的完整性",
-                                "relevance": "评估回答的相关性",
-                                "clarity": "评估回答的清晰度"
-                            }
                         }
+                        # 使用工具函数确保所有必要字段
+                        case = ensure_test_case_fields(case)
                         cases.append(case)
         except Exception as e:
             print(f"[TestCaseGen] 尝试提取测试用例时出错: {str(e)}")

@@ -15,7 +15,8 @@ from config import get_template_list, load_template, get_test_set_list, load_tes
 from models.api_clients import get_client, get_provider_from_model
 from models.token_counter import count_tokens, estimate_cost
 from utils.evaluator import PromptEvaluator
-from utils.optimizer import PromptOptimizer, AutomaticPromptOptimizer
+from utils.optimizer import PromptOptimizer
+from utils.auto_optimizer import AutomaticPromptOptimizer
 from utils.common import (
     calculate_average_score, 
     get_dimension_scores, 
@@ -134,8 +135,8 @@ def render_prompt_auto_optimization():
         col1, col2 = st.columns(2)
         
         with col1:
-            max_iterations = st.number_input("最大迭代轮次", min_value=1, max_value=100, value=10, step=1)
-            test_cases_per_iter = st.number_input("每轮测试用例数", min_value=1, max_value=20, value=3, step=1)
+            max_iterations = st.number_input("最大迭代轮次", min_value=1, max_value=1000, value=10, step=1)
+            test_cases_per_iter = st.number_input("每轮测试用例数", min_value=1, max_value=50, value=3, step=1)
             optimization_strategy = st.selectbox(
                 "优化策略",
                 ["balanced", "accuracy", "completeness", "conciseness"],
