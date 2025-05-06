@@ -323,15 +323,22 @@ class AutomaticPromptOptimizer:
             # 尝试使用LLM生成针对当前提示词的测试方向
             from utils.parallel_executor import execute_model_sync
             
-            # 准备生成测试方向的提示词
+            # 准备生成测试方向的提示词 - 使用初始提示词和当前提示词的组合，确保测试方向不会偏离原始目标
             prompt = f"""
 请分析以下提示词，并生成5个不同角度的测试方向，用于全面评估提示词的效果。
 每个测试方向应该从不同角度测试提示词的能力，包括基本功能、边界条件、特殊情况等。
 
-当前提示词:
+【原始提示词】:
+```
+{self.initial_prompt}
+```
+
+【当前优化版本】:
 ```
 {self.current_prompt}
 ```
+
+重要说明：请确保生成的测试方向始终围绕原始提示词要解决的核心问题，无论提示词如何演变，测试方向都必须保持对原始任务目标的一致性。
 
 请返回5个测试方向，每个测试方向应该是一句话描述，格式如下:
 1. [测试方向描述]
@@ -384,11 +391,11 @@ class AutomaticPromptOptimizer:
                 missing = 3 - len(directions)
                 directions.extend(self._get_default_test_directions()[:missing])
             
-            # 为每个方向添加具体的测试用例生成指示
+            # 为每个方向添加具体的测试用例生成指示，添加提示保持测试与原始目标的一致性
             expanded_directions = []
             for d in directions[:5]:  # 最多取5个
                 expanded_directions.append(
-                    f"测试方向：{d} - 请为此方向生成详细的测试用例，包含用户输入和期望输出，用于评估提示词的效果。"
+                    f"测试方向：{d} - 请为此方向生成详细的测试用例，包含用户输入和期望输出，用于评估提示词的效果。确保测试用例严格对应原始提示词的预期目标和用途。"
                 )
             
             self._log("DEBUG", f"生成了 {len(expanded_directions)} 个测试方向")
@@ -401,11 +408,11 @@ class AutomaticPromptOptimizer:
     def _get_default_test_directions(self):
         """返回默认的测试方向"""
         return [
-            "测试方向：基本功能测试 - 请生成测试用例检查提示词的基本功能是否正常工作，能否按预期响应简单问题。",
-            "测试方向：格式遵循测试 - 请生成测试用例检查提示词是否能按照指定的格式要求输出内容。",
-            "测试方向：复杂度测试 - 请生成测试用例包含复杂问题或多个问题，检查提示词处理复杂信息的能力。",
-            "测试方向：边界条件测试 - 请生成一些边界情况的测试用例，检查提示词在极端情况下的表现。",
-            "测试方向：指令跟随测试 - 请生成测试用例，检查提示词是否能严格按照用户指令执行。"
+            "测试方向：基本功能测试 - 请生成测试用例检查提示词的基本功能是否正常工作，能否按照原始目标预期响应简单问题。",
+            "测试方向：格式遵循测试 - 请生成测试用例检查提示词是否能按照指定的格式要求输出内容，同时确保内容与原始任务目标一致。",
+            "测试方向：复杂度测试 - 请生成测试用例包含复杂问题或多个问题，检查提示词处理复杂信息的能力，但始终确保问题围绕原始提示词的核心目标。",
+            "测试方向：边界条件测试 - 请生成一些边界情况的测试用例，检查提示词在极端情况下的表现，同时保持对原始任务目标的专注。",
+            "测试方向：指令跟随测试 - 请生成测试用例，检查提示词是否能严格按照用户指令执行，同时与原始提示词的预期用途保持一致。"
         ]
     
     def _calculate_average_score(self, results):
@@ -557,48 +564,52 @@ class AutomaticPromptOptimizer:
         """生成默认测试用例，当自动生成失败时使用"""
         import time, uuid
         
-        # 基于当前提示词内容，创建几个通用测试用例
+        # 基于当前提示词内容，创建几个通用测试用例，但始终保持对原始提示词目标的一致性
+        original_goal = "满足原始提示词的预期目标"
+        
         test_cases = [
             {
                 "id": f"default_{int(time.time())}_{uuid.uuid4().hex[:6]}",
-                "description": "基本功能测试",
-                "user_input": "为这个提示词提供一个基本的测试输入，检查基本功能是否正常工作。",
-                "expected_output": "一个完整、准确的回应，满足提示词的基本要求。",
+                "description": "基本功能测试 - 原始目标一致性",
+                "user_input": f"请提供一个简单任务，测试提示词是否能够按照原始设计目标正常工作。",
+                "expected_output": f"一个完整、准确的回应，满足提示词的基本要求，并且与原始提示词的核心目标保持一致：{original_goal}。",
                 "evaluation_criteria": {
-                    "accuracy": "评估回答的准确性",
-                    "completeness": "评估回答的完整性",
-                    "relevance": "评估回答的相关性",
-                    "clarity": "评估回答的清晰度"
+                    "accuracy": "评估回答是否准确体现了原始提示词的意图",
+                    "completeness": "评估回答是否完整覆盖了原始提示词的要求",
+                    "relevance": "评估回答是否与原始提示词的目标相关",
+                    "clarity": "评估回答的清晰度",
+                    "goal_consistency": "评估回答是否始终保持对原始目标的专注"
                 }
             },
             {
                 "id": f"default_{int(time.time())+1}_{uuid.uuid4().hex[:6]}",
-                "description": "边界条件测试",
-                "user_input": "这是一个复杂的测试用例，包含多个需求和边界条件，用于测试提示词的鲁棒性。",
-                "expected_output": "一个能全面处理复杂需求和边界条件的回答。",
+                "description": "边界条件测试 - 保持原始目标",
+                "user_input": "这是一个复杂的测试用例，包含多个需求和边界条件，但仍然需要围绕原始提示词的核心目标。",
+                "expected_output": "一个能全面处理复杂需求和边界条件的回答，同时不偏离原始提示词的预期用途。",
                 "evaluation_criteria": {
-                    "accuracy": "评估回答的准确性",
-                    "completeness": "评估回答的完整性",
-                    "relevance": "评估回答的相关性",
-                    "clarity": "评估回答的清晰度"
+                    "accuracy": "评估回答在复杂情况下的准确性",
+                    "completeness": "评估回答在边界条件下的完整性",
+                    "relevance": "评估回答是否始终与原始提示词目标相关",
+                    "clarity": "评估回答的清晰度",
+                    "goal_adherence": "评估即使在复杂情况下是否仍然坚持原始目标"
                 }
             },
             {
                 "id": f"default_{int(time.time())+2}_{uuid.uuid4().hex[:6]}",
-                "description": "指令遵循测试",
-                "user_input": "请严格按照以下格式回答：1. 问题分析 2. 可能的解决方案 3. 建议的最佳方案。问题是：如何提高提示词效果？",
-                "expected_output": "一个严格按照指定格式的回答，包含问题分析、解决方案列表和最佳建议。",
+                "description": "指令遵循测试 - 原始目标框架内",
+                "user_input": "请严格按照以下格式回答，但确保内容仍然紧密围绕原始提示词的核心目标：1. 问题分析 2. 可能的解决方案 3. 建议的最佳方案。",
+                "expected_output": "一个严格按照指定格式的回答，同时确保内容始终聚焦于原始提示词要解决的核心问题。",
                 "evaluation_criteria": {
                     "accuracy": "评估回答的准确性",
                     "completeness": "评估回答的完整性",
-                    "relevance": "评估回答的相关性",
+                    "relevance": "评估回答对原始目标的相关性",
                     "clarity": "评估回答的清晰度",
-                    "instruction_following": "评估是否严格遵循了指令要求"
+                    "instruction_following": "评估是否遵循了格式要求同时保持对原始目标的专注"
                 }
             }
         ]
         
-        self._log("INFO", f"已生成 {len(test_cases)} 个默认测试用例")
+        self._log("INFO", f"已生成 {len(test_cases)} 个默认测试用例，确保与原始提示词目标保持一致")
         return test_cases
 
 
