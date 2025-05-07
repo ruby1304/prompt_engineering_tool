@@ -199,23 +199,15 @@ def render_prompt_interactive_test():
                             client = get_client(provider)
                             
                             # 调用模型
-                            if provider in ["openai", "xai"]:
-                                messages = [
-                                    {"role": "system", "content": prompt_template},
-                                    {"role": "user", "content": user_input}
-                                ]
-                                response = loop.run_until_complete(client.generate_with_messages(
-                                    messages,
-                                    model,
-                                    params
-                                ))
-                            else:
-                                combined_prompt = f"System: {prompt_template}\n\nUser: {user_input}"
-                                response = loop.run_until_complete(client.generate(
-                                    combined_prompt,
-                                    model,
-                                    params
-                                ))
+                            messages = [
+                                {"role": "system", "content": prompt_template},
+                                {"role": "user", "content": user_input}
+                            ]
+                            response = loop.run_until_complete(client.generate_with_messages(
+                                messages,
+                                model,
+                                params
+                            ))
                             
                             # 关闭循环
                             loop.close()
@@ -236,25 +228,16 @@ def render_prompt_interactive_test():
                         # 准备多个请求
                         requests = []
                         for i in range(test_count):
-                            if provider in ["openai", "xai"]:
-                                messages = [
-                                    {"role": "system", "content": prompt_template},
-                                    {"role": "user", "content": user_input}
-                                ]
-                                requests.append({
-                                    "model": model,
-                                    "messages": messages,
-                                    "provider": provider,
-                                    "params": params
-                                })
-                            else:
-                                combined_prompt = f"System: {prompt_template}\n\nUser: {user_input}"
-                                requests.append({
-                                    "model": model,
-                                    "prompt": combined_prompt,
-                                    "provider": provider,
-                                    "params": params
-                                })
+                            messages = [
+                                {"role": "system", "content": prompt_template},
+                                {"role": "user", "content": user_input}
+                            ]
+                            requests.append({
+                                "model": model,
+                                "messages": messages,
+                                "provider": provider,
+                                "params": params
+                            })
                         
                         # 使用并行执行器执行请求
                         responses = execute_models_sync(requests)

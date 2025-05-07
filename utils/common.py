@@ -193,16 +193,11 @@ async def call_model_with_messages(client, provider, model, system_prompt, user_
     """调用模型API并返回响应"""
     try:
         # 使用新的并行执行器实现
-        if provider in ["openai", "xai"]:
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_input}
-            ]
-            return await execute_model(model, messages=messages, provider=provider, params=params)
-        else:
-            # 对于其他API客户端
-            combined_prompt = f"System: {system_prompt}\n\nUser: {user_input}"
-            return await execute_model(model, prompt=combined_prompt, provider=provider, params=params)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_input}
+        ]
+        return await execute_model(model, messages=messages, provider=provider, params=params)
     except Exception as e:
         return {"error": str(e), "text": "", "usage": {}}
 
@@ -299,13 +294,10 @@ def run_test(template, model, test_set, model_provider=None, repeat_count=1, tem
                 }
                 
                 # 根据提供商选择消息格式或普通文本格式
-                if provider in ["openai", "xai"]:
-                    request["messages"] = [
-                        {"role": "system", "content": prompt_template},
-                        {"role": "user", "content": user_input}
-                    ]
-                else:
-                    request["prompt"] = f"System: {prompt_template}\n\nUser: {user_input}"
+                request["messages"] = [
+                    {"role": "system", "content": prompt_template},
+                    {"role": "user", "content": user_input}
+                ]
                 
                 all_requests.append(request)
         
@@ -439,15 +431,11 @@ def regenerate_expected_output(case: dict, template: dict, model: str, provider:
         params = {"temperature": temperature, "max_tokens": 1000}
         
         # 使用并行执行器的同步方法
-        if provider in ["openai", "xai"]:
-            messages = [
-                {"role": "system", "content": prompt_template},
-                {"role": "user", "content": user_input}
-            ]
-            response = execute_model_sync(model, messages=messages, provider=provider, params=params)
-        else:
-            combined_prompt = f"System: {prompt_template}\n\nUser: {user_input}"
-            response = execute_model_sync(model, prompt=combined_prompt, provider=provider, params=params)
+        messages = [
+            {"role": "system", "content": prompt_template},
+            {"role": "user", "content": user_input}
+        ]
+        response = execute_model_sync(model, messages=messages, provider=provider, params=params)
         
         if "error" in response:
             return {"error": response["error"]}

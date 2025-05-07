@@ -56,22 +56,15 @@ def generate_ai_expected_output(
             params["temperature"] = temperature
             
             # 调用模型
-            if provider in ["openai", "xai"]:
-                response = loop.run_until_complete(client.generate_with_messages(
-                    [
-                        {"role": "system", "content": prompt_template},
-                        {"role": "user", "content": user_input}
-                    ],
-                    model,
-                    params
-                ))
-            else:
-                combined_prompt = f"System: {prompt_template}\n\nUser: {user_input}"
-                response = loop.run_until_complete(client.generate(
-                    combined_prompt,
-                    model,
-                    params
-                ))
+            messages = [
+                {"role": "system", "content": prompt_template},
+                {"role": "user", "content": user_input}
+            ]
+            response = loop.run_until_complete(client.generate_with_messages(
+                messages,
+                model,
+                params
+            ))
             
             # 关闭循环
             loop.close()
