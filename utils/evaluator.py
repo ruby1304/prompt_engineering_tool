@@ -243,42 +243,35 @@ class PromptEvaluator:
                 completeness = int(min(len_ratio * 70, 100))
             else:
                 completeness = 50  # 如果期望输出为空，则给予中等分数
-            
+
             # 相关性和清晰度默认值
             relevance = 70  # 默认相关性分数
             clarity = 75    # 默认清晰度分数
-            
-            # 计算提示词效率得分 (0-100分) - 线性计算，字符数越少分数越高
+
+            # 计算提示词效率得分 (0-40分)
             prompt_tokens = count_tokens(prompt) if prompt else 0
             prompt_efficiency = calculate_prompt_efficiency(prompt_tokens)
-                
-            # 计算总体分数，将prompt效率作为评估因素
-            overall_score = int((accuracy_score + completeness + relevance + clarity + prompt_efficiency) / 5)
 
-            # 生成基本评估结果
+            # 计算质量总分 (0-100分)
+            quality_score = int((accuracy_score + completeness + relevance + clarity) / 4)
+
+            # 返回分数拆分
             return {
                 "scores": {
                     "accuracy": accuracy_score,
                     "completeness": completeness,
                     "relevance": relevance,
                     "clarity": clarity,
-                    "prompt_efficiency": prompt_efficiency  # 添加提示词效率评分
+                    "prompt_efficiency": prompt_efficiency
                 },
-                "analysis": "这是一个本地生成的基本评估，未使用评估模型。本地评估主要基于文本相似度和提示词长度，可能无法准确评估语义理解。",
-                "overall_score": overall_score,
-                "prompt_info": {
-                    "token_count": prompt_tokens,
-                },
-                "is_local_evaluation": True  # 标记这是本地评估
+                "quality_score": quality_score,
+                "efficiency_score": prompt_efficiency
             }
+
         except Exception as e:
-            prompt_tokens = count_tokens(prompt) if prompt else 0
             return {
-                "error": f"本地评估出错: {str(e)}",
-                "prompt_info": {
-                    "token_count": prompt_tokens,
-                },
-                "is_local_evaluation": True
+                "scores": {},
+                "error": f"评估过程中发生错误: {str(e)}"
             }
 
     async def generate_test_cases_async(self, model: str, test_purpose: str, example_case: Dict, target_count: int = None, progress_callback=None) -> Dict:

@@ -8,6 +8,11 @@ from typing import Dict, Any, Optional, List, Tuple, Callable
 
 from .constants import JSON_CODE_BLOCK_PATTERNS, DEFAULT_EVALUATION_CRITERIA
 
+EFFICIENCY_CONFIG = {
+    "ideal_token_count": 400,  # 期望的token数，对应高分
+    "barely_pass_token_count": 1200  # 勉强及格的token数，对应低分
+}
+
 
 def extract_json_from_text(text: str) -> str:
     """
@@ -217,11 +222,17 @@ def calculate_prompt_efficiency(prompt_tokens: int) -> int:
     Returns:
         int: 效率分数(0-100)
     """
-    if prompt_tokens == 0:
-        return 100  # 空提示词，给满分(实际上这种情况很少)
-    
-    # 线性公式：100 - (tokens - 100) * 0.1, 限定在40-100之间
-    # 100个tokens及以下得满分，之后每增加10个tokens减1分
-    base_score = 100
-    token_penalty = max(0, prompt_tokens - 100) * 0.1
-    return max(40, min(100, int(base_score - token_penalty)))
+    ideal = EFFICIENCY_CONFIG["ideal_token_count"]
+    barely_pass = EFFICIENCY_CONFIG["barely_pass_token_count"]
+
+    if prompt_tokens <= ideal:
+        return 100  # 期望token数及以下，满分
+
+    if prompt_tokens >= barely_pass:
+        return 60  # 勉强及格的token数及以上，最低分
+
+    # 线性插值计算分数
+    score_range = 100 - 60
+    token_range = barely_pass - ideal
+    score = 100 - ((prompt_tokens - ideal) / token_range) * score_range
+    return max(0, min(100, int(score)))
