@@ -45,20 +45,20 @@ DEFAULT_CONFIG = {
         "azure": ["gpt-4o"]
     },
     "custom_providers": [],  # 新增：用户添加的自定义提供商列表
-    "evaluator_model": "gpt-4o",
+    "evaluator_model": "grok-3",
     "default_params": {
         "temperature": 0.7,
         "max_tokens": 1000,
         "top_p": 1.0
     },
     "use_local_evaluation": False,
-    "system_templates": {  # 新增：系统提示词模板类型
+    "system_templates": {
         "evaluator": "evaluator_template",
-        "optimizer": "optimizer",  # 修正：确保与 optimizer.json 文件名匹配
+        "optimizer": "optimizer_template",
         "criteria_generator": "criteria_generator_template",
         "testcase_generator": "testcase_generator_template",
-        "zero_shot_optimizer": "zero_shot_optimizer",  # 修正：确保与 zero_shot_optimizer.json 文件名匹配
-        "problem_analyzer": "problem_analyzer"  # 新增：问题分析器模板
+        "zero_shot_optimizer": "zero_shot_optimizer_template",
+        "problem_analyzer": "problem_analyzer"
     }
 }
 
@@ -116,7 +116,7 @@ DEFAULT_SYSTEM_TEMPLATES = {
     "optimizer_template": {
         "name": "optimizer_template",
         "description": "用于优化提示词的提示词模板",
-        "template": """你是一个专业的提示词工程优化专家。请基于详细的评估分析，为原始提示词生成3个针对性优化版本。
+        "template": """你是一个专业的提示词工程优化专家。请基于详细的评估分析，为原始提示词生成1个针对性优化版本。
 
 原始提示词:
 {{original_prompt}}
@@ -130,7 +130,7 @@ DEFAULT_SYSTEM_TEMPLATES = {
 优化指导:
 {{optimization_guidance}}
 
-请生成3个不同的优化版本，每个版本针对不同的问题方向。对每个版本，请详细说明:
+请生成1个优化版本。请详细说明:
 1. 应用的优化策略
 2. 如何解决发现的问题
 3. 预期的效果改进
@@ -141,20 +141,6 @@ DEFAULT_SYSTEM_TEMPLATES = {
   "optimized_prompts": [
     {
       "prompt": "优化后的提示词内容1",
-      "strategy": "应用的优化策略说明",
-      "problem_addressed": "针对解决的主要问题",
-      "expected_improvements": "预期的效果改进",
-      "reasoning": "为什么这种修改能解决问题"
-    },
-    {
-      "prompt": "优化后的提示词内容2",
-      "strategy": "应用的优化策略说明",
-      "problem_addressed": "针对解决的主要问题",
-      "expected_improvements": "预期的效果改进",
-      "reasoning": "为什么这种修改能解决问题"
-    },
-    {
-      "prompt": "优化后的提示词内容3",
       "strategy": "应用的优化策略说明",
       "problem_addressed": "针对解决的主要问题",
       "expected_improvements": "预期的效果改进",
@@ -385,19 +371,33 @@ def get_available_models() -> Dict[str, List[str]]:
     return models
 
 def get_template_list() -> List[str]:
-    """获取所有提示词模板列表"""
-    return [f.name.replace(".json", "") for f in TEMPLATES_DIR.glob("*.json")]
+    """获取所有提示词模板列表，按修改时间倒序排序"""
+    files = list(TEMPLATES_DIR.glob("*.json"))
+    files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    return [f.name.replace(".json", "") for f in files]
 
 def get_system_template_list() -> List[str]:
-    """获取所有系统提示词模板列表"""
-    return [f.name.replace(".json", "") for f in SYSTEM_TEMPLATES_DIR.glob("*.json")]
+    """获取所有系统提示词模板列表，按修改时间倒序排序"""
+    files = list(SYSTEM_TEMPLATES_DIR.glob("*.json"))
+    files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    return [f.name.replace(".json", "") for f in files]
 
 def get_all_templates() -> Dict[str, List[str]]:
-    """获取所有模板，分为普通模板和系统模板"""
+    """获取所有模板，分为普通模板和系统模板，均按修改时间倒序排序"""
     return {
         "normal": get_template_list(),
         "system": get_system_template_list()
     }
+
+def get_all_template_names_sorted() -> List[str]:
+    """获取所有提示词模板名称列表（包括普通和系统），按修改时间倒序排序"""
+    normal_templates = [(f, f.stat().st_mtime) for f in TEMPLATES_DIR.glob("*.json")]
+    system_templates = [(f, f.stat().st_mtime) for f in SYSTEM_TEMPLATES_DIR.glob("*.json")]
+    
+    all_template_files = normal_templates + system_templates
+    all_template_files.sort(key=lambda item: item[1], reverse=True)
+    
+    return [f.name.replace(".json", "") for f, _ in all_template_files]
 
 def save_template(name: str, template: Dict) -> None:
     """保存提示词模板"""

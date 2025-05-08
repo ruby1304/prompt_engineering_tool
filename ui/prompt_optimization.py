@@ -9,7 +9,7 @@ import time
 import plotly.express as px
 import plotly.graph_objects as go
 
-from config import get_template_list, load_template, get_test_set_list, load_test_set, save_template, get_available_models
+from config import get_template_list, load_template, get_test_set_list, load_test_set, save_template, get_available_models, get_all_template_names_sorted
 from models.api_clients import get_client, get_provider_from_model
 from models.token_counter import count_tokens, estimate_cost
 from utils.evaluator import PromptEvaluator
@@ -74,13 +74,13 @@ def render_prompt_optimization():
         col1, col2 = st.columns(2)
         
         with col1:
-            template_list = get_template_list()
+            template_list = get_all_template_names_sorted()
             if not template_list:
-                st.warning("未找到提示词模板，请先创建模板")
+                st.warning("未找到任何提示词模板（包括系统模板），请先创建模板")
                 return
                 
             selected_template = st.selectbox(
-                "选择提示词模板",
+                "选择提示词模板（包含系统模板）",
                 template_list
             )
             
@@ -309,11 +309,11 @@ def render_iterative_optimization():
     本功能支持自动多轮提示词优化与评估，自动选出最优版本。
     """)
     # 选择模板、模型、测试集
-    template_list = get_template_list()
+    template_list = get_all_template_names_sorted()
     if not template_list:
-        st.warning("未找到提示词模板，请先创建模板")
+        st.warning("未找到任何提示词模板（包括系统模板），请先创建模板")
         return
-    selected_template = st.selectbox("选择提示词模板", template_list, key="iter_template")
+    selected_template = st.selectbox("选择提示词模板（包含系统模板）", template_list, key="iter_template")
     template = load_template(selected_template) if selected_template else None
     available_models = get_available_models()
     all_models = [(provider, model) for provider, models in available_models.items() for model in models]
@@ -377,6 +377,7 @@ def render_iterative_optimization():
         }.get(x, x),
         key="iter_strategy"
     )
+    optimization_retries = st.number_input("优化失败重试次数", min_value=0, max_value=10, value=3, step=1, key="iter_optimization_retries")
     
     # 开始优化按钮
     if st.button("🚀 开始自动迭代优化", type="primary"):
@@ -514,52 +515,82 @@ def render_iterative_optimization():
         inner_status_text = st.empty()
 
         # 进度回调，支持两层进度
-        def iteration_progress_callback(iteration, total_iterations, inner_idx, inner_total, global_idx, global_total, stage=None, avg_score=None):
-            # 输出debug信息以便跟踪进度回调
-            print(f"[调试] 进度回调: 轮次={iteration}/{total_iterations}, 内部进度={inner_idx}/{inner_total}, 全局进度={global_idx}/{global_total}, 阶段={stage}, 分数={avg_score}")
+        def iteration_progress_callback(iteration, total_iterations, inner_idx, inner_total, global_idx, global_total, stage=None, data=None):
+            # 从data中获取更详细的进度和分数信息
+            avg_score = data.get('avg_score') if data else None 
+            child_current = data.get('child_current') if data else inner_idx
+            child_total = data.get('child_total') if data else inner_total
             
-            # 外层进度（轮数）
-            iter_progress = min(iteration / total_iterations, 1.0) if total_iterations > 0 else 0
+            # --- BEGIN MODIFICATION for effective_stage_name ---
+            effective_stage_name = None
+            child_data_from_parent = data.get('child_data', {}) if data else {}
+
+            # Priority 1: 'stage_name' from child's 'complete(data_to_add=...)'
+            effective_stage_name = child_data_from_parent.get('stage_name')
+            
+            # Update avg_score if it's more specifically available in child_data_from_parent
+            if child_data_from_parent.get('avg_score') is not None:
+                avg_score = child_data_from_parent.get('avg_score')
+
+            if not effective_stage_name and data:
+                # Priority 2: 'description' from ProgressTracker (passed as 'stage' in callback)
+                effective_stage_name = data.get('description') # 'description' from ProgressTracker
+            
+            if not effective_stage_name:
+                # Priority 3: 'stage' directly from callback args (less common now with ProgressTracker)
+                effective_stage_name = stage
+
+            # --- END MODIFICATION for effective_stage_name ---
+
+            # 更新总进度条
+            iter_progress = min(global_idx / global_total, 1.0) if global_total > 0 else 0
             iteration_progress_bar.progress(iter_progress)
-            iteration_status = f"迭代优化进行中... 第 {iteration}/{total_iterations} 轮"
-            if avg_score is not None:
-                iteration_status += f"，当前分数: {avg_score:.2f}"
+            
+            iteration_status = f"迭代优化进行中... 第 {iteration}/{total_iterations} 轮 (总进度: {iter_progress:.2%})"
+            if avg_score is not None and effective_stage_name and ('eval_done' in effective_stage_name or 'opt_eval_done' in effective_stage_name):
+                iteration_status += f"，阶段 '{effective_stage_name}' 平均分: {avg_score:.2f}"
+            elif avg_score is not None: 
+                 iteration_status += f"，当前平均分: {avg_score:.2f}"
             iteration_status_text.text(iteration_status)
             
-            # 内层进度（本轮评估/优化评估）
-            if stage == "gen":
-                inner_progress = min(inner_idx / inner_total, 1.0) if inner_total > 0 else 0
-                inner_progress_bar.progress(inner_progress)
-                inner_status_text.text(f"本轮生成响应进度: {inner_idx}/{inner_total}")
-            elif stage == "eval":
-                inner_progress = min(inner_idx / inner_total, 1.0) if inner_total > 0 else 0
-                inner_progress_bar.progress(inner_progress)
-                inner_status_text.text(f"本轮评估进度: {inner_idx}/{inner_total}")
-            elif stage == "opt_gen":
-                inner_progress = min(inner_idx / inner_total, 1.0) if inner_total > 0 else 0
-                inner_progress_bar.progress(inner_progress)
-                inner_status_text.text(f"优化版本生成进度: {inner_idx}/{inner_total}")
-            elif stage == "opt_eval":
-                inner_progress = min(inner_idx / inner_total, 1.0) if inner_total > 0 else 0
-                inner_progress_bar.progress(inner_progress)
-                inner_status_text.text(f"优化版本评估进度: {inner_idx}/{inner_total}")
-            elif stage == "eval_done":
-                inner_progress_bar.progress(1.0)
-                inner_status = f"本轮评估完成! 平均分: {avg_score:.2f}" if avg_score is not None else "本轮评估完成!"
-                inner_status_text.success(inner_status)
+            # 内层进度（具体阶段的进度）
+            current_stage_progress = min(child_current / child_total, 1.0) if child_total > 0 else 0
+            inner_progress_bar.progress(current_stage_progress)
+
+            stage_text_map = {
+                "gen": f"生成响应: {child_current}/{child_total}",
+                "eval": f"评估响应: {child_current}/{child_total}",
+                "opt_gen": f"生成优化版本响应: {child_current}/{child_total}",
+                "opt_eval": f"评估优化版本: {child_current}/{child_total}",
+                "eval_done": f"评估完成! 平均分: {avg_score:.2f}" if avg_score is not None else "评估完成!",
+                "opt_eval_done": f"优化版本评估完成! 平均分: {avg_score:.2f}" if avg_score is not None else "优化版本评估完成!"
+            }
+            
+            display_stage_key = effective_stage_name 
+            if effective_stage_name: 
+                if effective_stage_name.startswith("gen_") and len(effective_stage_name.split('_')) > 1 : display_stage_key = "gen"
+                elif effective_stage_name.startswith("eval_") and not "done" in effective_stage_name and len(effective_stage_name.split('_')) > 1: display_stage_key = "eval"
+                elif effective_stage_name.startswith("opt_gen_") and len(effective_stage_name.split('_')) > 2 : display_stage_key = "opt_gen"
+                elif effective_stage_name.startswith("opt_eval_") and not "done" in effective_stage_name and len(effective_stage_name.split('_')) > 2: display_stage_key = "opt_eval"
+                elif "eval_done" in effective_stage_name: display_stage_key = "eval_done"
+                elif "opt_eval_done" in effective_stage_name: display_stage_key = "opt_eval_done"
+
+            status_message = stage_text_map.get(display_stage_key, f"处理中: {effective_stage_name} ({child_current}/{child_total})")
+            
+            if display_stage_key and "done" in display_stage_key:
+                inner_status_text.success(status_message)
             else:
-                # 其他阶段
-                inner_status_text.text(f"正在处理... 阶段: {stage}")
+                inner_status_text.text(status_message)
 
         try:
             st.info(f"即将开始迭代优化，计划进行 {max_iterations} 轮迭代...")
-            iteration_status_text.text("开始多轮迭代优化与评估...")
             
             # 添加时间戳记录开始时间
             start_time = time.time()
             
             # 执行迭代优化
-            result = PromptOptimizer().iterative_prompt_optimization_sync(
+            optimizer = PromptOptimizer(optimization_retries=optimization_retries)
+            result = optimizer.iterative_prompt_optimization_sync(
                 initial_prompt=template.get("template", ""),
                 test_set=test_cases_for_optimization, 
                 evaluator=PromptEvaluator(),

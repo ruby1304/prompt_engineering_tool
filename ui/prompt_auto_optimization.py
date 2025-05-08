@@ -137,6 +137,9 @@ def render_prompt_auto_optimization():
         with col1:
             max_iterations = st.number_input("最大迭代轮次", min_value=1, max_value=1000, value=10, step=1)
             test_cases_per_iter = st.number_input("每轮测试用例数", min_value=1, max_value=50, value=3, step=1)
+            target_score = st.number_input("目标分数 (0-100, 0表示不设置)", min_value=0, max_value=100, value=0, step=1)
+            optimization_retries = st.number_input("优化失败重试次数", min_value=0, max_value=10, value=3, step=1) # Add optimization_retries input
+            
             optimization_strategy = st.selectbox(
                 "优化策略",
                 ["balanced", "accuracy", "completeness", "conciseness"],
@@ -195,10 +198,29 @@ def render_prompt_auto_optimization():
                     "test_cases_per_iter": test_cases_per_iter,
                     "optimization_strategy": optimization_strategy,
                     "temperature": temperature,
+                    "target_score": target_score,
                     "auto_save_best": auto_save_best,
+                    "optimization_retries": optimization_retries, # Add optimization_retries to config
                     "log_detail_level": log_detail_level,
                     "start_time": time.time()
                 }
+                
+                # 创建一个对象来处理自动优化逻辑
+                st.session_state.auto_optimizer = AutomaticPromptOptimizer(
+                    initial_prompt=template.get("template", ""),
+                    model=selected_model,
+                    provider=selected_provider,
+                    eval_model=eval_model,
+                    eval_provider=eval_provider,
+                    iter_model=iter_model,
+                    iter_provider=iter_provider,
+                    max_iterations=max_iterations,
+                    test_cases_per_iter=test_cases_per_iter,
+                    optimization_strategy=optimization_strategy,
+                    temperature=temperature,
+                    target_score=target_score,
+                    optimization_retries=optimization_retries # Pass optimization_retries to optimizer
+                )
                 
                 # 重新加载页面以显示优化过程界面
                 st.rerun()
@@ -250,7 +272,9 @@ def display_running_optimization():
             max_iterations=config['max_iterations'],
             test_cases_per_iter=config['test_cases_per_iter'],
             optimization_strategy=config['optimization_strategy'],
-            temperature=config['temperature']
+            temperature=config['temperature'],
+            target_score=config['target_score'],
+            optimization_retries=config.get('optimization_retries', 3) # Pass optimization_retries, with a default
         )
     
     # 进度条和控制按钮

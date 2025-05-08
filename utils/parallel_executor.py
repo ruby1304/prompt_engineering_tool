@@ -25,7 +25,7 @@ class ParallelModelExecutor:
         # 缓存客户端实例以避免重复创建
         self._client_cache = {}
         # 默认超时时间（秒）
-        self.default_timeout = 60
+        self.default_timeout = 180
         # 控制台进度显示选项
         self.show_progress = show_progress
         # 进度计数器

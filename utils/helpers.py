@@ -140,7 +140,7 @@ class ProgressTracker:
     
     def __init__(self, 
                 total_steps: int = 1, 
-                callback: Optional[Callable] = None,
+                callback: Optional[Callable] = None, # Callback signature: (current, total, description, data)
                 parent: Optional['ProgressTracker'] = None,
                 description: str = ""):
         """
@@ -148,7 +148,7 @@ class ProgressTracker:
         
         Args:
             total_steps: 总步骤数
-            callback: 进度回调函数，接收(current, total, description)
+            callback: 进度回调函数，接收(current, total, description, data)
             parent: 父级追踪器（用于嵌套进度）
             description: 进度描述
         """
@@ -158,35 +158,53 @@ class ProgressTracker:
         self.parent = parent
         self.description = description
         
-    def update(self, steps: int = 1, description: Optional[str] = None) -> None:
+    def update(self, steps: int = 1, description: Optional[str] = None, data_update: Optional[Dict] = None) -> None:
         """
         更新进度
         
         Args:
             steps: 前进的步骤数量
             description: 更新的进度描述（可选）
+            data_update: 传递给回调的附加数据字典
         """
         self.current = min(self.total, self.current + steps)
-        desc = description if description is not None else self.description
+        desc_to_use = description if description is not None else self.description
         
+        # Prepare data for the current callback
+        current_callback_data = data_update if data_update is not None else {}
+
         if self.callback:
-            self.callback(self.current, self.total, desc)
+            self.callback(self.current, self.total, desc_to_use, current_callback_data)
             
-        # 如果有父级追踪器，也更新它的进度
         if self.parent:
-            # 计算贡献给父级的进度
-            step_contribution = steps / self.total
-            self.parent.update(step_contribution)
+            # When updating a parent, the 'steps' for the parent is fractional based on child's progress.
+            # The 'data_update' for the parent's callback should include info about the child's state.
+            parent_step_contribution = steps / self.total # This is how much this child contributed to one step of parent
             
-    def complete(self, description: Optional[str] = None) -> None:
+            # Data to pass to parent's callback, indicating it's from a child update
+            parent_data_update = {
+                'child_description': desc_to_use,
+                'child_current': self.current,
+                'child_total': self.total,
+                'child_data': current_callback_data # Pass along data from the child
+            }
+            # Merge with any existing data_update if it was meant for the parent specifically (though less common)
+            if data_update and self.parent.callback: # if data_update was for parent
+                 parent_data_update.update(data_update)
+
+            self.parent.update(parent_step_contribution, self.parent.description, data_update=parent_data_update)
+            
+    def complete(self, description: Optional[str] = None, data_to_add: Optional[Dict] = None) -> None:
         """
         标记进度为完成
         
         Args:
             description: 更新的进度描述（可选）
+            data_to_add: 完成时传递给回调的附加数据
         """
-        if self.current < self.total:
-            self.update(self.total - self.current, description)
+        remaining_steps = self.total - self.current
+        if remaining_steps >= 0: # Ensure we only update if not already past total
+            self.update(remaining_steps, description, data_update=data_to_add)
 
 
 def calculate_prompt_efficiency(prompt_tokens: int) -> int:

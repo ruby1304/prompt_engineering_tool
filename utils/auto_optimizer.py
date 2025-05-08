@@ -9,13 +9,14 @@ from config import load_config, get_system_template
 # 导入新的并行执行器
 from utils.parallel_executor import execute_model, execute_models, execute_model_sync, execute_models_sync
 from utils.optimizer import PromptOptimizer
+import time
 
 class AutomaticPromptOptimizer:
     """全自动提示词优化器，支持自动测试用例生成、评估和持续迭代"""
     
     def __init__(self, initial_prompt, model, provider, eval_model=None, eval_provider=None,
                 iter_model=None, iter_provider=None, max_iterations=10, test_cases_per_iter=3, 
-                optimization_strategy="balanced", temperature=0.7):
+                optimization_strategy="balanced", temperature=0.7, target_score=None, optimization_retries=3):
         """
         初始化全自动提示词优化器
         
@@ -31,6 +32,8 @@ class AutomaticPromptOptimizer:
         - test_cases_per_iter: 每轮迭代生成多少个测试用例
         - optimization_strategy: 优化策略
         - temperature: 温度参数
+        - target_score: 目标分数
+        - optimization_retries: 优化重试次数
         """
         from utils.evaluator import PromptEvaluator
         
@@ -47,6 +50,8 @@ class AutomaticPromptOptimizer:
         self.test_cases_per_iter = test_cases_per_iter
         self.optimization_strategy = optimization_strategy
         self.temperature = temperature
+        self.target_score = target_score if target_score is not None and target_score > 0 else None
+        self.optimization_retries = optimization_retries
         
         # 初始化相关对象
         self.evaluator = PromptEvaluator()
@@ -65,11 +70,21 @@ class AutomaticPromptOptimizer:
         self._log("INFO", f"对话模型: {model} ({provider})")
         self._log("INFO", f"评估模型: {eval_model} ({eval_provider})")
         self._log("INFO", f"迭代模型: {iter_model} ({iter_provider})")
-        self._log("INFO", f"优化策略: {optimization_strategy}, 最大迭代次数: {max_iterations}, 每轮测试用例数: {test_cases_per_iter}")
+        self._log("INFO", f"优化策略: {optimization_strategy}, 最大迭代次数: {max_iterations}, 每轮测试用例数: {test_cases_per_iter}, 目标分数: {self.target_score}, 优化重试次数: {self.optimization_retries}")
     
     def is_completed(self):
-        """检查优化过程是否已完成"""
-        return self._completed or self.current_iteration >= self.max_iterations
+        """检查优化是否已完成"""
+        if self._completed:  # Manually stopped or error
+            return True
+        if self.target_score is not None and self.best_score >= self.target_score:
+            self._log("INFO", f"已达到目标分数 {self.target_score:.2f} (当前最佳: {self.best_score:.2f})。优化完成。")
+            self._completed = True
+            return True
+        if self.current_iteration >= self.max_iterations:
+            self._log("INFO", f"已达到最大迭代次数 {self.max_iterations}。优化完成。")
+            self._completed = True
+            return True
+        return False
     
     def mark_completed(self):
         """标记优化已完成"""
@@ -83,7 +98,6 @@ class AutomaticPromptOptimizer:
     
     def _log(self, level, message):
         """记录日志"""
-        import time
         self.logs.append({
             "time": time.time(),
             "level": level,
@@ -94,10 +108,10 @@ class AutomaticPromptOptimizer:
     def run_single_iteration(self):
         """运行单次优化迭代，包括生成测试、评估、优化"""
         if self.is_completed():
-            self._log("WARNING", "优化已完成，无法继续迭代")
+            self._log("WARNING", "优化已完成或达到停止条件，无法继续迭代。")
             return None
         
-        self._log("INFO", f"开始第 {self.current_iteration + 1}/{self.max_iterations} 轮优化")
+        self._log("INFO", f"开始第 {self.current_iteration + 1}/{self.max_iterations} 轮优化 (当前最佳分数: {self.best_score:.2f}, 目标分数: {self.target_score or '未设置'})")
         
         # 步骤1: 生成此轮的测试方向和测试用例
         test_cases = self._generate_test_cases()
@@ -133,20 +147,24 @@ class AutomaticPromptOptimizer:
         if avg_score > self.best_score:
             self.best_prompt = self.current_prompt
             self.best_score = avg_score
-            self._log("INFO", f"发现新的最佳提示词，得分: {avg_score:.2f}")
+            self._log("INFO", f"发现新的最佳提示词 (基于当前轮测试)，得分: {self.best_score:.2f}")
         
-        # 如果不是最后一轮，进行优化
-        if self.current_iteration + 1 < self.max_iterations:
-            # 步骤3: 基于测试结果优化提示词
+        # 决定是否为下一轮优化提示词
+        will_continue_next_iteration = False
+        if (self.current_iteration + 1) < self.max_iterations:
+            if self.target_score is None or self.best_score < self.target_score:
+                will_continue_next_iteration = True
+
+        if will_continue_next_iteration:
+            self._log("INFO", f"准备为下一轮 (第 {self.current_iteration + 2} 轮) 优化提示词。")
             new_prompt = self._optimize_prompt(test_results)
             if new_prompt:
                 self.current_prompt = new_prompt
-                self._log("INFO", f"提示词已优化，新长度: {len(new_prompt)} 字符")
+                self._log("INFO", "提示词已优化。新提示词将在下一轮使用。")
             else:
-                self._log("WARNING", "优化失败，继续使用当前提示词")
+                self._log("WARNING", f"优化提示词在 {self.optimization_retries} 次尝试后失败，下一轮将继续使用此轮的提示词。")
         else:
-            self._log("INFO", "已达到最大迭代次数，完成优化")
-            self._completed = True
+            self._log("INFO", "已达到停止条件 (最大迭代次数或目标分数已满足/即将满足)，不再为下一轮优化提示词。")
         
         # 增加迭代计数
         self.current_iteration += 1
@@ -437,57 +455,64 @@ class AutomaticPromptOptimizer:
             template_vars = re.findall(r'{{(.*?)}}', self.current_prompt)
             self._log("DEBUG", f"检测到原始提示词中包含 {len(template_vars)} 个模板变量: {', '.join(template_vars)}")
             
-            # 添加重试机制，最多尝试3次
-            max_retries = 10
+            # 添加重试机制
+            max_retries = self.optimization_retries
             retry_count = 0
             optimization_result = None
+            new_prompt = None
             
             while retry_count < max_retries:
+                self._log("DEBUG", f"优化提示词尝试 {retry_count + 1}/{max_retries}...")
                 # 使用优化器优化提示词
-                optimization_result = self.optimizer.optimize_prompt_sync(
+                current_optimization_result = self.optimizer.optimize_prompt_sync(
                     original_prompt=self.current_prompt,
                     test_results=test_results,
                     optimization_strategy=self.optimization_strategy
                 )
                 
                 # 检查结果是否有错误
-                if "error" in optimization_result:
-                    error_msg = optimization_result["error"]
-                    if "空响应内容" in error_msg or "JSON解析失败" in error_msg:
+                if "error" in current_optimization_result:
+                    error_msg = current_optimization_result["error"]
+                    if "空响应内容" in error_msg or "JSON解析失败" in error_msg or "未能生成优化提示词" in error_msg:
                         retry_count += 1
                         self._log("WARNING", f"优化尝试 {retry_count}/{max_retries} 失败: {error_msg}，准备重试...")
+                        if retry_count < max_retries:
+                            time.sleep(1)
                         continue
                     else:
                         # 如果是其他错误，不重试
-                        self._log("ERROR", f"优化提示词时出错: {error_msg}")
+                        self._log("ERROR", f"优化提示词时发生不可重试错误: {error_msg}")
                         return None
                 
                 # 获取优化结果
-                optimized_prompts = optimization_result.get("optimized_prompts", [])
+                optimized_prompts = current_optimization_result.get("optimized_prompts", [])
                 if not optimized_prompts:
                     retry_count += 1
                     self._log("WARNING", f"优化尝试 {retry_count}/{max_retries} 未生成优化提示词，准备重试...")
+                    if retry_count < max_retries:
+                        time.sleep(1)
                     continue
                 
                 # 选择第一个优化提示词
                 best_opt = optimized_prompts[0]
-                new_prompt = best_opt.get("prompt", "")
+                new_prompt_candidate = best_opt.get("prompt", "")
                 
-                if not new_prompt:
+                if not new_prompt_candidate:
                     retry_count += 1
                     self._log("WARNING", f"优化尝试 {retry_count}/{max_retries} 生成了空提示词，准备重试...")
+                    if retry_count < max_retries:
+                        time.sleep(1)
                     continue
                 
-                # 如果执行到这里，表示成功获得优化提示词，跳出循环
+                new_prompt = new_prompt_candidate
                 break
             
             # 如果所有尝试都失败，记录错误并返回 None
-            if retry_count == max_retries:
+            if new_prompt is None:
                 self._log("ERROR", f"在 {max_retries} 次尝试后仍未能成功优化提示词")
                 return None
                 
             # 检查优化后的提示词是否保留了所有原始变量
-            # 如果有变量丢失，尝试恢复它们
             if template_vars:
                 missing_vars = []
                 for var in template_vars:
@@ -499,21 +524,13 @@ class AutomaticPromptOptimizer:
                     self._log("WARNING", f"优化后提示词中缺少以下变量: {', '.join(missing_vars)}")
                     
                     # 尝试恢复丢失的变量 - 这是一个简化的修复方法
-                    # 如果原始提示词中变量在特定的位置或上下文中，我们应该尝试保持这个上下文
                     for var in missing_vars:
-                        # 查找变量在原始提示词中的上下文
                         var_pattern = r'{{' + re.escape(var) + r'}}'
                         var_match = re.search(r'(.{0,30})' + var_pattern + r'(.{0,30})', self.current_prompt)
                         if var_match:
-                            # 获取变量前后的上下文
                             before_context = var_match.group(1)
                             after_context = var_match.group(2)
                             
-                            # 尝试找到适合插入变量的位置
-                            # 这里使用一个简化的启发式方法：
-                            # 查找上下文前部分的最后出现位置，或上下文后部分的第一次出现位置
-                            
-                            # 尝试查找前部分上下文
                             if before_context and len(before_context.strip()) > 5:
                                 last_before = new_prompt.rfind(before_context.strip())
                                 if last_before != -1:
@@ -522,7 +539,6 @@ class AutomaticPromptOptimizer:
                                     self._log("INFO", f"在位置 {insert_pos} 恢复了变量 {{{{{var}}}}}")
                                     continue
                             
-                            # 尝试查找后部分上下文
                             if after_context and len(after_context.strip()) > 5:
                                 first_after = new_prompt.find(after_context.strip())
                                 if first_after != -1:
@@ -531,11 +547,9 @@ class AutomaticPromptOptimizer:
                                     self._log("INFO", f"在位置 {insert_pos} 恢复了变量 {{{{{var}}}}}")
                                     continue
                             
-                            # 如果无法找到合适的位置，则添加到提示词末尾
                             self._log("WARNING", f"无法找到合适位置恢复变量 {{{{{var}}}}}，将添加到提示词末尾")
                             new_prompt = new_prompt + f"\n\n请使用 {{{{{var}}}}} 变量替换相应内容。"
                 
-                # 进行最终检查，确保所有变量都已恢复
                 all_recovered = True
                 for var in template_vars:
                     var_pattern = r'{{' + re.escape(var) + r'}}'
@@ -564,7 +578,6 @@ class AutomaticPromptOptimizer:
         """生成默认测试用例，当自动生成失败时使用"""
         import time, uuid
         
-        # 基于当前提示词内容，创建几个通用测试用例，但始终保持对原始提示词目标的一致性
         original_goal = "满足原始提示词的预期目标"
         
         test_cases = [
