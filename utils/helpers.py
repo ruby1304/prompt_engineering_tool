@@ -9,8 +9,8 @@ from typing import Dict, Any, Optional, List, Tuple, Callable
 from .constants import JSON_CODE_BLOCK_PATTERNS, DEFAULT_EVALUATION_CRITERIA
 
 EFFICIENCY_CONFIG = {
-    "ideal_token_count": 400,  # 期望的token数，对应高分
-    "barely_pass_token_count": 1200  # 勉强及格的token数，对应低分
+    "ideal_token_count": 1000,  # 期望的token数，对应高分
+    "barely_pass_token_count": 2500  # 勉强及格的token数，对应低分
 }
 
 
@@ -212,27 +212,33 @@ class ProgressTracker:
             self.update(remaining_steps, description, data_update=data_to_add)
 
 
-def calculate_prompt_efficiency(prompt_tokens: int) -> int:
+def calculate_prompt_efficiency(prompt_tokens: int, variable_token_weights: Optional[Dict[str, int]] = None) -> int:
     """
-    计算提示词效率分数
-    
+    计算提示词效率分数，考虑系统变量的token权重
+
     Args:
         prompt_tokens: 提示词的token数量
-    
+        variable_token_weights: 系统变量的token权重字典（可选）
+
     Returns:
         int: 效率分数(0-100)
     """
     ideal = EFFICIENCY_CONFIG["ideal_token_count"]
     barely_pass = EFFICIENCY_CONFIG["barely_pass_token_count"]
 
+    # 如果提供了变量权重，调整token数
+    if variable_token_weights:
+        adjusted_tokens = sum(variable_token_weights.values())
+        prompt_tokens += adjusted_tokens
+
     if prompt_tokens <= ideal:
         return 100  # 期望token数及以下，满分
 
     if prompt_tokens >= barely_pass:
-        return 60  # 勉强及格的token数及以上，最低分
+        return 0  # 勉强及格的token数及以上，最低分
 
     # 线性插值计算分数
-    score_range = 100 - 60
+    score_range = 100 - 0
     token_range = barely_pass - ideal
     score = 100 - ((prompt_tokens - ideal) / token_range) * score_range
     return max(0, min(100, int(score)))
