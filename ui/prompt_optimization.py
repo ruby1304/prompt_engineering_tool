@@ -28,38 +28,8 @@ from ui.components import (
     display_test_case_details
 )
 
-def render_zero_shot_optimization():
-    st.title("🧠 0样本提示词优化（Zero-shot Prompt Optimization）")
-    st.markdown("""
-    无需测试集和标注样本，仅需输入任务描述、目标和约束，系统将自动生成多组高质量提示词。
-    """)
-    
-    with st.form("zero_shot_form"):
-        task_desc = st.text_area("任务描述", help="简要描述你希望AI完成的任务")
-        task_goal = st.text_area("任务目标", help="明确你期望的输出或效果")
-        constraints = st.text_area("约束条件（可选）", help="如风格、格式、长度、禁止事项等")
-        submit = st.form_submit_button("🔄 生成优化提示词")
-    
-    if submit and task_desc and task_goal:
-        with st.spinner("AI正在生成提示词..."):
-            optimizer = PromptOptimizer()
-            result = optimizer.zero_shot_optimize_prompt_sync(task_desc, task_goal, constraints)
-            if "error" in result:
-                st.error(f"生成失败: {result['error']}")
-            else:
-                prompts = result.get("optimized_prompts", [])
-                if not prompts:
-                    st.warning("未能生成优化提示词")
-                else:
-                    st.success(f"成功生成 {len(prompts)} 个优化提示词版本")
-                    for i, opt in enumerate(prompts):
-                        with st.expander(f"优化版本 {i+1}"):
-                            st.markdown(f"**优化策略**: {opt.get('strategy', '')}")
-                            st.markdown(f"**预期改进**: {opt.get('expected_improvements', '')}")
-                            st.code(opt.get('prompt', ''), language="markdown")
-
 def render_prompt_optimization():
-    tab1, tab2, tab3 = st.tabs(["专项优化（有样本）", "0样本优化", "自动迭代优化"])
+    tab1, tab2 = st.tabs(["专项优化（有样本）", "自动迭代优化"])
     with tab1:
         st.title("🔍 提示词专项优化")
         
@@ -298,9 +268,8 @@ def render_prompt_optimization():
                         auto_evaluate=auto_evaluate,
                         model_provider=selected_provider
                     )
+
     with tab2:
-        render_zero_shot_optimization()
-    with tab3:
         render_iterative_optimization()
 
 def render_iterative_optimization():
@@ -341,12 +310,11 @@ def render_iterative_optimization():
         selected_test_set = st.selectbox("选择测试集", test_set_list, key="iter_testset")
         if selected_test_set:
             loaded_test_set = load_test_set(selected_test_set)
-            # 修正：始终取用例列表，且过滤无效用例
-            test_set = loaded_test_set.get("cases", [])
-            # 过滤掉不完整的用例
-            test_set = [case for case in test_set if case.get("user_input") and case.get("expected_output") and case.get("evaluation_criteria")]
+            test_set = loaded_test_set  # 保持为dict，包含全局变量
+            # 仅用于显示用例数时过滤
+            valid_cases = [case for case in test_set.get("cases", []) if case.get("user_input") and case.get("expected_output") and case.get("evaluation_criteria")]
             test_set_name = selected_test_set
-            st.info(f"**测试用例数**: {len(test_set)}")
+            st.info(f"**测试用例数**: {len(valid_cases)}")
     else:
         # AI自动生成新测试集
         test_set_name = st.text_input("新测试集名称", value=f"AI生成测试集_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
@@ -397,7 +365,7 @@ def render_iterative_optimization():
             else:
                 generation_status_text.text("准备生成测试集...")
         
-        test_cases_for_optimization = []
+        test_cases_for_optimization = None
         
         # 如果是AI自动生成测试集模式，先生成测试集
         if test_set_mode == "AI自动生成新测试集":
@@ -453,7 +421,12 @@ def render_iterative_optimization():
                             for error in batch_result["errors"]:
                                 st.warning(error)
                                 
-                        test_cases_for_optimization = batch_result.get("test_cases", [])
+                        # 修正：组装为dict结构，便于后续传递
+                        test_cases_for_optimization = {
+                            "cases": batch_result.get("test_cases", []),
+                            "name": test_set_name,
+                            "description": test_set_desc,
+                        }
                 else:
                     # 直接生成完整测试集
                     generation_status_text.text("正在生成通用测试集...")
@@ -476,35 +449,37 @@ def render_iterative_optimization():
                         return
                         
                     generated_test_set = result.get("test_set", {})
-                    test_cases_for_optimization = generated_test_set.get("cases", [])
+                    test_cases_for_optimization = generated_test_set  # 保持为dict结构
                     
                     # 保存生成的测试集
                     from config import save_test_set
                     save_test_set(test_set_name, generated_test_set)
                     
                 # 检查生成的测试用例数量
-                if not test_cases_for_optimization:
+                if not test_cases_for_optimization or not test_cases_for_optimization.get("cases"):
                     st.error("未能生成测试用例，请尝试其他参数或使用已有测试集")
                     return
                     
                 # 更新生成进度
                 generation_progress_bar.progress(1.0)
-                generation_status_text.success(f"✅ 成功生成 {len(test_cases_for_optimization)} 个测试用例")
+                generation_status_text.success(f"✅ 成功生成 {len(test_cases_for_optimization['cases'])} 个测试用例")
                 
                 # 展示生成的测试用例
                 with st.expander("查看生成的测试用例"):
-                    for i, case in enumerate(test_cases_for_optimization):
+                    for i, case in enumerate(test_cases_for_optimization["cases"]):
                         st.write(f"**测试用例 {i+1}**: {case.get('description', '')}")
                         st.write(f"- **用户输入**: {case.get('user_input', '')}")
                         st.write(f"- **期望输出**: {case.get('expected_output', '')}")
                         st.write("---")
         else:
-            # 使用已有测试集
-            # 修正：始终过滤无效用例
-            test_cases_for_optimization = [case for case in test_set if case.get("user_input") and case.get("expected_output") and case.get("evaluation_criteria")]
+            # 使用已有测试集，直接赋值为dict结构
+            # 并过滤无效用例
+            filtered_cases = [case for case in test_set.get("cases", []) if case.get("user_input") and case.get("expected_output") and case.get("evaluation_criteria")]
+            test_cases_for_optimization = dict(test_set)
+            test_cases_for_optimization["cases"] = filtered_cases
 
         # 检查是否有测试用例用于优化
-        if not test_cases_for_optimization:
+        if not test_cases_for_optimization or not test_cases_for_optimization.get("cases"):
             st.error("未能获取或生成有效的测试用例，无法开始优化。请确保测试集中的每个用例都包含 user_input、expected_output 和 evaluation_criteria。")
             return
 
@@ -591,8 +566,8 @@ def render_iterative_optimization():
             # 执行迭代优化
             optimizer = PromptOptimizer(optimization_retries=optimization_retries)
             result = optimizer.iterative_prompt_optimization_sync(
-                initial_prompt=template.get("template", ""),
-                test_set=test_cases_for_optimization, 
+                initial_prompt=template,
+                test_set_dict=test_cases_for_optimization, 
                 evaluator=PromptEvaluator(),
                 optimization_strategy=optimization_strategy,
                 model=selected_model,

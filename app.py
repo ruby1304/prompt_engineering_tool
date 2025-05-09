@@ -27,11 +27,7 @@ from ui.test_manager import render_test_manager
 from ui.test_runner import render_test_runner
 from ui.results_viewer import render_results_viewer
 from ui.prompt_optimization import render_prompt_optimization
-from ui.prompt_ab_test import render_prompt_ab_test
-from ui.prompt_batch_ab_test import render_prompt_batch_ab_test
 from ui.provider_manager import render_provider_manager
-from ui.prompt_interactive_test import render_prompt_interactive_test
-from ui.prompt_dialogue_test import render_prompt_dialogue_test
 from ui.prompt_auto_optimization import render_prompt_auto_optimization
 
 
@@ -78,9 +74,6 @@ with st.sidebar:
     
     if st.button("🧪 测试运行", use_container_width=True):
         navigate_to("test_runner")
-    
-    if st.button("💬 交互式测试", use_container_width=True):
-        navigate_to("prompt_interactive_test")
         
     if st.button("🗣️ 多轮对话测试", use_container_width=True):
         navigate_to("prompt_dialogue_test")
@@ -93,9 +86,6 @@ with st.sidebar:
     
     if st.button("🤖 自动提示词优化", use_container_width=True):
         navigate_to("prompt_auto_optimization")
-    
-    if st.button("🔬 提示词A/B测试", use_container_width=True):
-        navigate_to("prompt_ab_test")
 
     st.divider()
     st.caption("© 2025 提示词调优工程工具 v1.0")
@@ -168,24 +158,12 @@ elif st.session_state.page == "test_runner":
 elif st.session_state.page == "results_viewer":
     render_results_viewer()
 
-elif st.session_state.page == "prompt_interactive_test":
-    render_prompt_interactive_test()
-
-elif st.session_state.page == "prompt_dialogue_test":
-    render_prompt_dialogue_test()
-
 # 在页面路由部分添加
 elif st.session_state.page == "prompt_optimization":
     render_prompt_optimization()
 
 elif st.session_state.page == "prompt_auto_optimization":
     render_prompt_auto_optimization()
-
-elif st.session_state.page == "prompt_ab_test":
-    render_prompt_ab_test()
-
-elif st.session_state.page == "prompt_batch_ab_test":
-    render_prompt_batch_ab_test()
 
 elif st.session_state.page == "provider_manager":
     render_provider_manager()

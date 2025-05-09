@@ -406,8 +406,8 @@ class PromptOptimizer:
 
     def iterative_prompt_optimization_sync(
         self,
-        initial_prompt: str,
-        test_set: List[Dict],
+        initial_prompt: object,  # 必须为提示词对象（dict），包含 template/variables 等
+        test_set_dict: Dict,  # 修正类型为 dict，包含 variables 和 cases
         evaluator,
         optimization_strategy: str = "balanced",
         model: str = None,
@@ -418,7 +418,11 @@ class PromptOptimizer:
         """
         自动多轮提示词优化主流程（同步）。
         支持并行生成和评估，并在每步调用进度回调。
+        initial_prompt、current_prompt、best_iter_opt_prompt、best_prompt 均为提示词对象（dict），
+        只有在实际 LLM 调用时才渲染为字符串。
         """
+        # 获取用例列表
+        test_cases = test_set_dict.get("cases", [])
         # Initialize event loop
         try:
             loop = asyncio.get_event_loop()
@@ -430,11 +434,11 @@ class PromptOptimizer:
             asyncio.set_event_loop(loop)
 
         print(f"[调试] 开始迭代优化，计划执行 {max_iterations} 轮迭代")
-        current_prompt = initial_prompt
-        best_prompt = initial_prompt
+        current_prompt_obj = initial_prompt  # 保持为 obj
+        best_prompt_obj = initial_prompt
         best_score = -float('inf')
         history = []
-        total_cases = len(test_set)
+        total_cases = len(test_cases)
         
         # Define expected number of optimized prompts for progress calculation consistency
         EXPECTED_OPTIMIZED_PROMPTS_COUNT = 3 
@@ -489,7 +493,7 @@ class PromptOptimizer:
                         description=f"gen_{i+1}" 
                     )
                     eval_tracker = ProgressTracker(
-                        total_steps=len(test_set), 
+                        total_steps=total_cases, 
                         parent=progress_tracker,
                         description=f"eval_{i+1}" 
                     )
@@ -498,10 +502,10 @@ class PromptOptimizer:
                     eval_tracker = None
                 
                 requests = []
-                for idx, test_case in enumerate(test_set):
+                for idx, test_case in enumerate(test_cases):
                     user_input = test_case.get("user_input", "")
-                    # 使用当前提示词作为模板，而不是未定义的template变量
-                    replaced_prompt = render_prompt_template(current_prompt, test_set, test_case)
+                    # 渲染当前提示词对象为字符串
+                    replaced_prompt = render_prompt_template(current_prompt_obj, test_set_dict, test_case)
                     print(f"[调试] 替换后的提示词: {replaced_prompt}")
                     request = {
                         "model": model,
@@ -511,7 +515,8 @@ class PromptOptimizer:
                         "context": {
                             "expected_output": test_case.get("expected_output", ""),
                             "criteria": test_case.get("evaluation_criteria", {}),
-                            "prompt": replaced_prompt,
+                            "prompt_obj": current_prompt_obj,  # 存 obj
+                            "prompt_str": replaced_prompt,      # 存渲染后的 str
                             "idx": idx
                         }
                     }
@@ -529,7 +534,8 @@ class PromptOptimizer:
                             "model_response": response.get("text", ""),
                             "expected_output": context.get("expected_output", ""),
                             "criteria": context.get("criteria", {}),
-                            "prompt": context.get("prompt", ""),
+                            "prompt_obj": context.get("prompt_obj", {}),
+                            "prompt_str": context.get("prompt_str", ""),
                             "idx": context.get("idx", -1)
                         })
                 
@@ -541,7 +547,7 @@ class PromptOptimizer:
 
                         # Ensure eval_results include all necessary fields
                         for task, result in zip(evaluation_tasks, eval_results):
-                            result['user_input'] = task.get('prompt', '')
+                            result['user_input'] = task.get('prompt_str', '')
                             result['expected_output'] = task.get('expected_output', '')
                             result['system_parameters'] = task.get('params', {})
 
@@ -560,21 +566,22 @@ class PromptOptimizer:
                 history.append({
                     'iteration': i+1,
                     'stage': 'initial',
-                    'prompt': current_prompt,
+                    'prompt_obj': current_prompt_obj,  # 存 obj
+                    'prompt_str': render_prompt_template(current_prompt_obj, test_set_dict, test_cases[0]) if test_cases else '',
                     'eval_results': eval_results,
                     'avg_score': avg_score
                 })
                 
                 if avg_score > best_score:
                     best_score = avg_score
-                    best_prompt = current_prompt
+                    best_prompt_obj = current_prompt_obj
                 
                 if i < max_iterations - 1: 
                     print(f"[调试] 第 {i+1} 轮开始优化提示词")
                     print("--- eval_results ---")
                     print(eval_results)
                     opt_result = self.optimize_prompt_sync(
-                        current_prompt, eval_results, optimization_strategy
+                        current_prompt_obj, eval_results, optimization_strategy
                     )
                     optimized_prompts = opt_result.get('optimized_prompts', [])
                     print(f"[调试] 第 {i+1} 轮生成了 {len(optimized_prompts)} 个优化版本")
@@ -583,7 +590,7 @@ class PromptOptimizer:
                         print(f"[警告] 第 {i+1} 轮未能生成优化版本，使用当前提示词继续下一轮")
                         continue 
                     
-                    best_iter_opt_prompt = current_prompt 
+                    best_iter_opt_prompt_obj = current_prompt_obj 
                     best_iter_opt_score = avg_score      
 
                     all_opt_versions_for_history = []
@@ -592,7 +599,9 @@ class PromptOptimizer:
                         if opt_idx >= EXPECTED_OPTIMIZED_PROMPTS_COUNT and progress_tracker:
                              print(f"[警告] 生成的优化提示词数量 ({len(optimized_prompts)}) 超出预期 ({EXPECTED_OPTIMIZED_PROMPTS_COUNT})，进度条可能不完全精确。")
 
-                        opt_prompt_text = opt.get('prompt', '')
+                        # opt 现在应为 obj
+                        opt_prompt_obj = opt.get('prompt_obj', opt) if isinstance(opt, dict) else opt
+                        opt_prompt_str = render_prompt_template(opt_prompt_obj, test_set_dict, test_cases[0]) if test_cases else ''
                         opt_strategy = opt.get('strategy', '')
                         print(f"[调试] 第 {i+1} 轮评估优化版本 {opt_idx+1}: {opt_strategy}")
 
@@ -603,16 +612,21 @@ class PromptOptimizer:
                             opt_eval_tracker_child = ProgressTracker(total_steps=total_cases, parent=progress_tracker, description=f"opt_eval_{i+1}_{opt_idx+1}")
 
                         opt_requests = []
-                        for test_idx, test_case in enumerate(test_set):
+                        for test_idx, test_case in enumerate(test_cases):
                             user_input = test_case.get("user_input", "")
                             opt_requests.append({
                                 "model": model, "provider": provider,
-                                "prompt": opt_prompt_text + "\n\n" + user_input,
+                                "messages": [
+                                    {"role": "system", "content": opt_prompt_str},
+                                    {"role": "user", "content": user_input}
+                                ],
                                 "params": DEFAULT_GENERATION_PARAMS,
                                 "context": {
                                     "expected_output": test_case.get("expected_output", ""),
                                     "criteria": test_case.get("evaluation_criteria", {}),
-                                    "prompt": opt_prompt_text, "idx": test_idx
+                                    "prompt_obj": opt_prompt_obj,
+                                    "prompt_str": opt_prompt_str,
+                                    "idx": test_idx
                                 }
                             })
                         
@@ -631,7 +645,9 @@ class PromptOptimizer:
                                     "model_response": res.get("text", ""),
                                     "expected_output": ctx.get("expected_output", ""),
                                     "criteria": ctx.get("criteria", {}),
-                                    "prompt": ctx.get("prompt", ""), "idx": ctx.get("idx", -1)
+                                    "prompt_obj": ctx.get("prompt_obj", {}),
+                                    "prompt_str": ctx.get("prompt_str", ""),
+                                    "idx": ctx.get("idx", -1)
                                 })
                         
                         current_opt_eval_results = []
@@ -654,7 +670,7 @@ class PromptOptimizer:
                         
                         opt_version_data = {
                             'iteration': i+1, 'stage': 'optimized', 'version': opt_idx + 1,
-                            'prompt': opt_prompt_text, 'strategy': opt_strategy,
+                            'prompt_obj': opt_prompt_obj, 'prompt_str': opt_prompt_str, 'strategy': opt_strategy,
                             'eval_results': current_opt_eval_results, 'avg_score': opt_avg_score,
                             'is_best': False 
                         }
@@ -662,20 +678,20 @@ class PromptOptimizer:
                         
                         if opt_avg_score > best_iter_opt_score:
                             best_iter_opt_score = opt_avg_score
-                            best_iter_opt_prompt = opt_prompt_text
+                            best_iter_opt_prompt_obj = opt_prompt_obj
                     
                     history.extend(all_opt_versions_for_history)
 
                     for hist_item in history:
-                        if hist_item['iteration'] == i+1 and hist_item['stage'] == 'optimized' and hist_item['prompt'] == best_iter_opt_prompt:
+                        if hist_item['iteration'] == i+1 and hist_item['stage'] == 'optimized' and hist_item['prompt_obj'] == best_iter_opt_prompt_obj:
                             hist_item['is_best'] = True
                             print(f"[调试] 第 {i+1} 轮选择优化版本 (策略: {hist_item.get('strategy')}) 作为本轮最佳，分数: {best_iter_opt_score:.2f}")
                             break
                     
-                    current_prompt = best_iter_opt_prompt 
+                    current_prompt_obj = best_iter_opt_prompt_obj 
                     if best_iter_opt_score > best_score: 
                         best_score = best_iter_opt_score
-                        best_prompt = best_iter_opt_prompt
+                        best_prompt_obj = best_iter_opt_prompt_obj
                 else: 
                     print(f"[调试] 这是最后一轮迭代 ({i+1}/{max_iterations})，不进行新的优化。")
 
@@ -685,7 +701,7 @@ class PromptOptimizer:
                 print(f"[调试] 历史记录 #{item_idx+1}: 轮次={item.get('iteration')}, 阶段={item.get('stage')}, 版本={item.get('version', '-')}, 分数={item.get('avg_score'):.2f}")
             
             return {
-                'best_prompt': best_prompt,
+                'best_prompt_obj': best_prompt_obj,  # 返回 obj
                 'best_score': best_score,
                 'history': history
             }
@@ -695,7 +711,7 @@ class PromptOptimizer:
             traceback.print_exc()
             return {
                 'error': f"迭代优化失败: {str(e)}",
-                'best_prompt': best_prompt, # Return current best even if error
+                'best_prompt_obj': best_prompt_obj, # Return current best even if error
                 'best_score': best_score,
                 'history': history # Return history up to the point of error
             }
@@ -712,41 +728,5 @@ class PromptOptimizer:
             if 'overall_score' in r and isinstance(r['overall_score'], (int, float)):
                 scores.append(r['overall_score'])
         return sum(scores)/len(scores) if scores else 0
-
-    def _generate_default_test_cases(self):
-        """生成默认测试用例，当自动生成失败时使用"""
-        test_cases = [
-            {
-                "description": "基本功能测试",
-                "user_input": "为这个提示词提供一个基本的测试输入，检查基本功能是否正常工作。",
-                "expected_output": "一个完整、准确的回应，满足提示词的基本要求。"
-            },
-            {
-                "description": "边界条件测试",
-                "user_input": "这是一个复杂的测试用例，包含多个需求和边界条件，用于测试提示词的鲁棒性。",
-                "expected_output": "一个能全面处理复杂需求和边界条件的回答。"
-            },
-            {
-                "description": "指令遵循测试",
-                "user_input": "请严格按照以下格式回答：1. 问题分析 2. 可能的解决方案 3. 建议的最佳方案。问题是：如何提高提示词效果？",
-                "expected_output": "一个严格按照指定格式的回答，包含问题分析、解决方案列表和最佳建议。"
-            }
-        ]
-        
-        test_cases = [ensure_test_case_fields(case) for case in test_cases]
-        
-        print(f"[INFO] 已生成 {len(test_cases)} 个默认测试用例")
-        return test_cases
-        
-    def _get_default_test_directions(self):
-        """返回默认的测试方向"""
-        return [
-            "测试方向：基本功能测试 - 请生成测试用例检查提示词的基本功能是否正常工作，能否按预期响应简单问题。",
-            "测试方向：格式遵循测试 - 请生成测试用例检查提示词是否能按照指定的格式要求输出内容。",
-            "测试方向：复杂度测试 - 请生成测试用例包含复杂问题或多个问题，检查提示词处理复杂信息的能力。",
-            "测试方向：边界条件测试 - 请生成一些边界情况的测试用例，检查提示词在极端情况下的表现。",
-            "测试方向：指令跟随测试 - 请生成测试用例，检查提示词是否能严格按照用户指令执行。"
-        ]
-
 
 __all__ = ['PromptOptimizer']
