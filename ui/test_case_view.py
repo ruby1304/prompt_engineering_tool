@@ -120,12 +120,12 @@ def display_test_case_editor(
     with col1:
         new_id = st.text_input("用例ID", value=case.get("id", ""), key=f"edit_id_{case_index}")
         new_desc = st.text_input("描述", value=case.get("description", ""), key=f"edit_desc_{case_index}")
-        new_user_input = st.text_area("用户输入", value=case.get("user_input", ""), height=80, key=f"edit_input_{case_index}")
+        new_user_input = st.text_area("用户输入", value=case.get("user_input", ""), height=150, key=f"edit_input_{case_index}", placeholder="按 Shift+Enter 换行")
         
         # 优先使用 session_state 中的值，保证AI生成后能立即刷新
         output_key = f"edit_output_{case_index}"
         output_value = st.session_state.get(output_key, case.get("expected_output", ""))
-        new_expected_output = st.text_area("期望输出", value=output_value, height=80, key=output_key)
+        new_expected_output = st.text_area("期望输出", value=output_value, height=150, key=output_key, placeholder="按 Shift+Enter 换行")
 
     with col2:
         st.write("")
@@ -296,10 +296,12 @@ def display_test_case_editor(
                     st.text(var_name)
                 
                 with col2:
-                    new_value = st.text_input(
+                    new_value = st.text_area(
                         "变量值", 
                         value=var_value,
-                        key=f"var_{var_name}"
+                        key=f"var_{var_name}",
+                        height=100,
+                        placeholder="按 Shift+Enter 换行"
                     )
                     case["variables"][var_name] = new_value
                 
@@ -511,10 +513,12 @@ def display_global_variables_editor(test_set: Dict[str, Any]) -> None:
                     st.text(var_name)
                 
                 with col2:
-                    new_value = st.text_input(
+                    new_value = st.text_area(
                         f"值", 
                         value=var_value,
-                        key=f"glob_var_{var_name}"
+                        key=f"glob_var_{var_name}",
+                        height=100,
+                        placeholder="按 Shift+Enter 换行"
                     )
                     test_set["variables"][var_name] = new_value
                 

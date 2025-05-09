@@ -202,10 +202,10 @@ def render_prompt_dialogue_test():
                                             st.error("请先选择目标测试集")
         
         # 用户输入区
-        user_input = st.text_area("输入您的消息", key="user_msg_input", height=100)
-        
-        # 提交按钮
-        if st.button("发送", type="primary", use_container_width=True):
+        user_input = st.text_area("输入您的消息", key="user_msg_input", height=100, placeholder="按 Shift+Enter 换行", on_change=None)
+
+        # 提交按钮和回车键兼容
+        if st.button("发送", type="primary", use_container_width=True) or st.session_state.get("enter_pressed", False):
             if not user_input:
                 st.warning("请输入消息")
             elif not model:
@@ -216,28 +216,28 @@ def render_prompt_dialogue_test():
                 with st.spinner("模型思考中..."):
                     # 准备对话历史以添加到提示词中
                     chat_records = format_chat_history(st.session_state.dialogue_history)
-                    
+
                     # 准备模板变量
                     template_vars = {
                         "chat_records": chat_records,
                         **prompt_vars  # 添加用户自定义的变量
                     }
-                    
+
                     # 渲染提示词模板
                     prompt_template = render_prompt_template(template, {"variables": template_vars}, {"variables": {}})
-                    
+
                     # 创建消息列表
                     messages = []
-                    
+
                     # 添加系统提示词
                     messages.append({"role": "system", "content": prompt_template})
-                    
+
                     # 调用模型
                     params = {"temperature": temperature, "max_tokens": 8000}
-                    
+
                     # 添加新的用户消息
                     messages.append({"role": "user", "content": user_input})
-                    
+
                     try:
                         # 使用同步调用
                         response = execute_model_sync(
@@ -246,14 +246,14 @@ def render_prompt_dialogue_test():
                             messages=messages,
                             params=params
                         )
-                        
+
                         if "error" in response and response["error"]:
                             st.error(f"模型调用失败: {response['error']}")
                             return
-                        
+
                         # 获取模型回复
                         assistant_response = response.get("text", "")
-                        
+
                         # 更新对话历史
                         st.session_state.dialogue_history.append({
                             "user": user_input,
@@ -266,10 +266,10 @@ def render_prompt_dialogue_test():
                             "complete_messages": messages,
                             "chat_records": chat_records  # 保存当前轮次的对话历史
                         })
-                        
+
                         # 增加对话回合数
                         st.session_state.chat_turn += 1
-                        
+
                         # 如果启用了自动评估，评估此轮对话
                         if auto_evaluate:
                             # 创建评估器
@@ -281,7 +281,7 @@ def render_prompt_dialogue_test():
                                 st.session_state.chat_turn
                             )
                             st.session_state.evaluation_results.append(evaluation)
-                            
+
                             # 保存提示词评分记录
                             if "scores" in evaluation:
                                 st.session_state.prompt_ratings.append({
@@ -292,12 +292,15 @@ def render_prompt_dialogue_test():
                         else:
                             # 如果未启用自动评估，添加一个空的占位符
                             st.session_state.evaluation_results.append(None)
-                        
+
                         # 清空输入框 (通过重新渲染页面实现)
                         st.experimental_rerun()
-                    
+
                     except Exception as e:
                         st.error(f"发生错误: {str(e)}")
+
+        # 监听回车键事件
+        st.session_state.enter_pressed = st.text_input("", key="hidden_input", on_change=lambda: st.session_state.update({"enter_pressed": True}))
 
 
 def save_dialogue_turn_to_test_set(test_set_name: str, turn_index: int, dialogue_history: List[Dict], evaluation: Dict = None) -> None:

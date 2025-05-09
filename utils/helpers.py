@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional, List, Tuple, Callable
 from .constants import JSON_CODE_BLOCK_PATTERNS, DEFAULT_EVALUATION_CRITERIA
 
 EFFICIENCY_CONFIG = {
-    "ideal_token_count": 1000,  # 期望的token数，对应高分
+    "ideal_token_count": 500,  # 期望的token数，对应高分
     "barely_pass_token_count": 2500  # 勉强及格的token数，对应低分
 }
 
