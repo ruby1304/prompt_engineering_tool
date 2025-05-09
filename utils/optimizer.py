@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Any, Tuple
 
 from models.api_clients import get_client, get_provider_from_model
 from config import load_config, get_system_template
+from utils.common import render_prompt_template
 # 导入新的并行执行器
 from utils.parallel_executor import execute_model, execute_models, execute_model_sync, execute_models_sync
 # 导入新的常量和工具函数
@@ -47,10 +48,26 @@ class PromptOptimizer:
         results_summary = self.format_test_results_summary(test_results)
         template = self.optimizer_template.get("template", "")
 
+        # Truncate or summarize components if the prompt length exceeds a safe threshold
+        MAX_PROMPT_LENGTH = 7500  # Set a safe limit below max_tokens
+
+        def truncate_text(text, max_length):
+            if len(text) > max_length:
+                return text[:max_length] + "... (truncated)"
+            return text
+
+        # Calculate available space for each component
+        available_length = MAX_PROMPT_LENGTH - len(template.replace("{{original_prompt}}", "").replace("{{results_summary}}", "").replace("{{problem_analysis}}", "").replace("{{optimization_guidance}}", ""))
+        component_share = available_length // 3  # Divide space among results_summary, problem_analysis, and optimization_guidance
+
+        results_summary = truncate_text(results_summary, component_share)
+        problem_analysis = truncate_text(problem_analysis["analysis"], component_share)
+        optimization_guidance = truncate_text(optimization_guidance, component_share)
+
         base_optimization_prompt = template\
             .replace("{{original_prompt}}", original_prompt)\
             .replace("{{results_summary}}", results_summary)\
-            .replace("{{problem_analysis}}", problem_analysis["analysis"])\
+            .replace("{{problem_analysis}}", problem_analysis)\
             .replace("{{optimization_guidance}}", optimization_guidance)
 
         print(f"[调试-优化器] 已准备基础优化提示词，长度: {len(base_optimization_prompt)} 字符")
@@ -66,7 +83,7 @@ class PromptOptimizer:
                 print(f"[调试-优化器] 第 {i+1}/3 次生成 - 尝试 {retry_count + 1}/{max_single_prompt_retries}...")
                 try:
                     call_params = dict(DEFAULT_GENERATION_PARAMS)
-                    call_params["temperature"] = 0.8 + (i * 0.05) # 略微调整温度以期获得不同结果
+                    call_params["temperature"] = 0.9
                     call_params["max_tokens"] = 8000 # 修改 max_tokens
 
                     print(f"[调试-优化器] 调用LLM进行第 {i+1} 次优化。参数: {call_params}")
@@ -96,8 +113,8 @@ class PromptOptimizer:
                         else: # 不可重试的JSON解析错误
                             break 
                     
-                    if not current_parsed_result or "optimized_prompts" not in current_parsed_result or not current_parsed_result["optimized_prompts"]:
-                        error_message = f"优化结果未包含有效的optimized_prompts数组. 解析结果: {current_parsed_result}"
+                    if not current_parsed_result or "optimized_prompt" not in current_parsed_result or not current_parsed_result["optimized_prompt"]:
+                        error_message = f"优化结果未包含有效的optimized_prompt. 解析结果: {current_parsed_result}"
                         print(f"[错误-优化器] {error_message}")
                         retry_count += 1
                         print(f"[警告-优化器] 第 {i+1}/3 次生成 - 尝试 {retry_count}/{max_single_prompt_retries} 失败: {error_message}，准备重试...")
@@ -105,13 +122,13 @@ class PromptOptimizer:
                             await asyncio.sleep(1)
                         continue
                     
-                    if current_parsed_result["optimized_prompts"]:
-                        all_optimized_prompts.append(current_parsed_result["optimized_prompts"][0])
+                    if current_parsed_result["optimized_prompt"]:
+                        all_optimized_prompts.append(current_parsed_result["optimized_prompt"])
                         current_prompt_generated = True
                         print(f"[调试-优化器] 第 {i+1}/3 次提示词生成成功。")
                         break # 当前单个提示词生成成功，跳出重试循环
                     else:
-                        error_message = f"optimized_prompts数组为空. 解析结果: {current_parsed_result}"
+                        error_message = f"优化结果未包含有效的optimized_prompt. 解析结果: {current_parsed_result}"
                         print(f"[错误-优化器] {error_message}")
                         retry_count += 1
                         print(f"[警告-优化器] 第 {i+1}/3 次生成 - 尝试 {retry_count}/{max_single_prompt_retries} 失败: {error_message}，准备重试...")
@@ -273,7 +290,7 @@ class PromptOptimizer:
         try:
             # 使用新的并行执行器和默认参数
             params = dict(DEFAULT_EVALUATION_PARAMS)
-            params["max_tokens"] = 1000
+            params["max_tokens"] = 2000
             
             result = await execute_model(
                 self.optimizer_model,
@@ -289,6 +306,7 @@ class PromptOptimizer:
                 return {
                     "analysis": "基于评估结果的默认分析：提示词可能需要改进清晰度、具体指令和结构化输出的要求，以提高响应质量。建议优化指令的准确性，明确期望的输出格式，并增强提示词的上下文信息。"
                 }
+            print({"analysis": analysis_text})
             return {"analysis": analysis_text}
         except Exception as e:
             print(f"[错误-优化器] 使用LLM分析问题时出错: {str(e)}，使用默认分析")
@@ -299,14 +317,19 @@ class PromptOptimizer:
 
     def format_test_results_summary_for_analysis(self, test_results: List[Dict]) -> str:
         """将测试结果格式化为更适合LLM分析的摘要"""
+        print("--- test_results ---")
+        print(test_results)
         summary = ""
         for i, result in enumerate(test_results):
             summary += f"--- Test Case {i+1} ---\n"
-            # 包含输入、输出、期望、分数和分析
             if "case_description" in result:
                 summary += f"Description: {result['case_description']}\n"
             if "user_input" in result:
                 summary += f"Input: {result['user_input']}\n"
+            if "expected_output" in result:
+                summary += f"Expected Output: {result['expected_output']}\n"
+            if "system_variables" in result:
+                summary += f"System Variables: {json.dumps(result['system_variables'], ensure_ascii=False)}\n"
             if "responses" in result:
                 for j, resp in enumerate(result.get("responses", [])):
                     summary += f"  Response {j+1}:\n"
@@ -315,22 +338,16 @@ class PromptOptimizer:
                     if "evaluation" in resp and resp["evaluation"]:
                         eval_data = resp["evaluation"]
                         if "scores" in eval_data:
-                            summary += f"    Scores: {json.dumps(eval_data['scores'])}\n"
+                            summary += f"    Scores: {json.dumps(eval_data['scores'], ensure_ascii=False)}\n"
                         if "overall_score" in eval_data:
                             summary += f"    Overall Score: {eval_data['overall_score']}\n"
                         if "analysis" in eval_data:
                             summary += f"    Analysis: {eval_data['analysis']}\n"
                     elif "error" in resp:
                         summary += f"    Error: {resp['error']}\n"
-            elif "evaluation" in result:  # 兼容旧格式
-                eval_data = result["evaluation"]
-                if "scores" in eval_data:
-                    summary += f"  Scores: {json.dumps(eval_data['scores'])}\n"
-                if "overall_score" in eval_data:
-                    summary += f"  Overall Score: {eval_data['overall_score']}\n"
-                if "analysis" in eval_data:
-                    summary += f"  Analysis: {eval_data['analysis']}\n"
             summary += "\n"
+        print("llm summary")
+        print(summary)
         return summary
 
     def build_optimization_guidance(self, problem_analysis: str, strategy: str) -> str: 
@@ -383,6 +400,8 @@ class PromptOptimizer:
         avg_score = sum(scores) / len(scores) if scores else 0
         summary += f"平均总分: {avg_score:.1f}\n"
         summary += "部分评估分析摘要:\n" + "\n".join(analyses_texts[:3])
+        print("summary")
+        print(summary)
         return summary
 
     def iterative_prompt_optimization_sync(
@@ -481,15 +500,18 @@ class PromptOptimizer:
                 requests = []
                 for idx, test_case in enumerate(test_set):
                     user_input = test_case.get("user_input", "")
+                    # 使用当前提示词作为模板，而不是未定义的template变量
+                    replaced_prompt = render_prompt_template(current_prompt, test_set, test_case)
+                    print(f"[调试] 替换后的提示词: {replaced_prompt}")
                     request = {
                         "model": model,
                         "provider": provider,
-                        "prompt": current_prompt + "\n\n" + user_input,
+                        "messages":[{"role": "system", "content": replaced_prompt},{"role": "user", "content": user_input}],
                         "params": DEFAULT_GENERATION_PARAMS,
                         "context": {
                             "expected_output": test_case.get("expected_output", ""),
                             "criteria": test_case.get("evaluation_criteria", {}),
-                            "prompt": current_prompt,
+                            "prompt": replaced_prompt,
                             "idx": idx
                         }
                     }
@@ -516,7 +538,13 @@ class PromptOptimizer:
                     try:
                         print(f"[调试] 第 {i+1} 轮评估 {len(evaluation_tasks)} 个响应 (当前提示词)")
                         eval_results = loop.run_until_complete(evaluator.run_evaluation_async(evaluation_tasks))
-                        
+
+                        # Ensure eval_results include all necessary fields
+                        for task, result in zip(evaluation_tasks, eval_results):
+                            result['user_input'] = task.get('prompt', '')
+                            result['expected_output'] = task.get('expected_output', '')
+                            result['system_parameters'] = task.get('params', {})
+
                         avg_score_for_stage = self._calc_avg_score(eval_results)
                         if eval_tracker: 
                             eval_tracker.complete(data_to_add={'avg_score': avg_score_for_stage, 
@@ -543,6 +571,8 @@ class PromptOptimizer:
                 
                 if i < max_iterations - 1: 
                     print(f"[调试] 第 {i+1} 轮开始优化提示词")
+                    print("--- eval_results ---")
+                    print(eval_results)
                     opt_result = self.optimize_prompt_sync(
                         current_prompt, eval_results, optimization_strategy
                     )

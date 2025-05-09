@@ -121,17 +121,22 @@ def render_results_viewer():
             prompt_data = results[prompt_to_optimize]
             original_prompt = prompt_data.get("template", {}).get("template", "")
             
-            # 准备评估结果列表
+            # Prepare evaluation results with all required fields
             evaluation_results = []
             for case in prompt_data.get("test_cases", []):
-                # 从 responses[0] 获取 evaluation
                 response_list = case.get("responses", [])
                 if not response_list:
                     continue
-                evaluation = response_list[0].get("evaluation") # Get evaluation from the first response
 
+                evaluation = response_list[0].get("evaluation")  # Get evaluation from the first response
                 if evaluation and not evaluation.get("error"):
-                    evaluation_results.append(evaluation)
+                    evaluation_results.append({
+                        "case_description": case.get("case_description", ""),
+                        "user_input": case.get("user_input", ""),
+                        "expected_output": case.get("expected_output", ""),
+                        "system_variables": case.get("system_variables", {}),
+                        "responses": evaluation
+                    })
             
             with st.spinner("正在生成优化建议..."):
                 # 调用优化器
@@ -158,7 +163,7 @@ def render_results_viewer():
                     st.success("已生成优化建议")
                     
                     for i, opt_prompt in enumerate(st.session_state.optimized_prompts):
-                        with st.expander(f"优化版本 {i+1}: {opt_prompt.get('strategy', '未知策略')}"):
+                        with st.expander(f"优化版本 {i+1}: {opt_prompt.get("strategy", "未知策略")}"):
                             st.markdown("**优化策略**:")
                             st.write(opt_prompt.get("strategy", ""))
                             
@@ -176,8 +181,8 @@ def render_results_viewer():
                                 original_template = prompt_data.get("template", {})
                                 new_template = dict(original_template)
                                 
-                                new_template["name"] = f"{original_template.get('name', 'template')}_{optimization_strategy}_v{i+1}"
-                                new_template["description"] = f"从 '{original_template.get('name', 'unknown')}' 优化: {opt_prompt.get('strategy', '')}"
+                                new_template["name"] = f"{original_template.get("name", "template")}_{optimization_strategy}_v{i+1}"
+                                new_template["description"] = f"从 '{original_template.get("name", "unknown")}' 优化: {opt_prompt.get("strategy", "")}"
                                 new_template["template"] = opt_prompt.get("prompt", "")
                                 
                                 save_template(new_template["name"], new_template)
