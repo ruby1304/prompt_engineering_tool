@@ -333,7 +333,7 @@ def render_iterative_optimization():
 
     # 迭代参数
     st.subheader("步骤3: 设置优化参数")
-    max_iterations = st.slider("迭代次数", 1, 10, 3)
+    max_iterations = st.slider("迭代次数", 1, 100, 5)
     optimization_strategy = st.selectbox(
         "优化策略",
         ["balanced", "accuracy", "completeness", "conciseness"],
@@ -606,11 +606,15 @@ def render_iterative_optimization():
                     history_stats[iteration]['initial'] += 1
                 elif stage == 'optimized':
                     history_stats[iteration]['optimized'] += 1
-            
+            # 修正：确保最后一轮也统计（即使优化版本为0）
+            for i in range(1, max_iterations + 1):
+                if i not in history_stats:
+                    history_stats[i] = {'initial': 0, 'optimized': 0}
             st.write("迭代历史数据统计:")
-            for iter_num, stats in sorted(history_stats.items()):
+            for iter_num in range(1, max_iterations + 1):
+                stats = history_stats.get(iter_num, {'initial': 0, 'optimized': 0})
                 st.write(f"- 第 {iter_num} 轮: 初始提示词 {stats['initial']} 个, 优化版本 {stats['optimized']} 个")
-                
+            
             # 更新最终进度
             iteration_progress_bar.progress(1.0)
             iteration_status_text.success("✅ 自动迭代优化完成！")
@@ -644,7 +648,17 @@ def render_iterative_optimization():
                     # 显示本轮初始提示词
                     if iter_data['initial']:
                         st.subheader(f"当前提示词 (平均分: {iter_data['initial'].get('avg_score', 0):.2f})")
-                        st.code(iter_data['initial']['prompt'], language="markdown")
+                        prompt_str = iter_data['initial'].get('prompt_str')
+                        prompt_obj = iter_data['initial'].get('prompt_obj')
+                        prompt = iter_data['initial'].get('prompt')
+                        if prompt_str:
+                            st.code(prompt_str, language="markdown")
+                        elif prompt:
+                            st.code(prompt, language="markdown")
+                        elif prompt_obj:
+                            st.code(json.dumps(prompt_obj, ensure_ascii=False, indent=2), language="json")
+                        else:
+                            st.warning("未找到本轮初始提示词内容")
                     else:
                         st.info(f"未找到第 {iter_num} 轮的初始提示词信息")
                     
@@ -657,20 +671,22 @@ def render_iterative_optimization():
                     if iter_data['optimized']:
                         st.subheader(f"本轮生成的优化版本 ({len(iter_data['optimized'])} 个)")
                         
-                        # 先找出最佳版本
+                        # 只标记一个最佳版本
                         best_version = None
                         for version in iter_data['optimized']:
                             if version.get('is_best', False):
                                 best_version = version
                                 break
                         
-                        # 如果没有明确标记最佳版本，找出分数最高的
                         if not best_version and iter_data['optimized']:
                             best_version = max(iter_data['optimized'], key=lambda x: x.get('avg_score', 0))
                         
+                        best_version_id = id(best_version) if best_version else None
+                        
                         # 展示每个优化版本 - 不再使用嵌套expander，而是使用容器和分隔线
-                        for version in iter_data['optimized']:
-                            is_best = version.get('is_best', False) or (best_version and version.get('prompt') == best_version.get('prompt'))
+                        for idx, version in enumerate(iter_data['optimized']):
+                            # 只标记一个最佳
+                            is_best = (id(version) == best_version_id)
                             version_label = f"版本 {version.get('version', '?')}"
                             
                             if is_best:
@@ -684,11 +700,18 @@ def render_iterative_optimization():
                             with version_container:
                                 st.markdown(f"### {version_label} - {version_strategy} (平均分: {version_score:.2f})")
                                 st.markdown(f"**优化策略**: {version_strategy}")
-                                if version.get('prompt'):
-                                    st.code(version['prompt'], language="markdown")
+                                v_prompt_str = version.get('prompt_str')
+                                v_prompt = version.get('prompt')
+                                v_prompt_obj = version.get('prompt_obj')
+                                if v_prompt_str:
+                                    st.code(v_prompt_str, language="markdown")
+                                elif v_prompt:
+                                    st.code(v_prompt, language="markdown")
+                                elif v_prompt_obj:
+                                    st.code(json.dumps(v_prompt_obj, ensure_ascii=False, indent=2), language="json")
                                 else:
                                     st.warning("未找到此版本的提示词内容")
-                                st.markdown("---")  # 添加分隔线
+                                st.markdown("---")
                     else:
                         st.info(f"第 {iter_num} 轮未生成优化版本")
             
