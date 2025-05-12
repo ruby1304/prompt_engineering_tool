@@ -645,15 +645,25 @@ class PromptEvaluator:
                 model_response = context.get("model_response", "")
                 expected_output = context.get("expected_output", "")
                 prompt = task.get("prompt", "")  # 获取原始提示词
-                
+
+                # 优先使用API返回的真实prompt_tokens
+                prompt_tokens = None
+                usage = response.get("usage", {})
+                if usage:
+                    # OpenAI/通用格式
+                    prompt_tokens = usage.get("prompt_tokens")
+                    # Anthropic格式
+                    if prompt_tokens is None:
+                        prompt_tokens = usage.get("input_tokens")
+                if prompt_tokens is None:
+                    prompt_tokens = count_tokens(prompt)
+
                 # 如果API调用成功，解析结果
                 if "text" in response and not response.get("error"):
                     try:
                         eval_text = response.get("text", "")
-                        
                         # 解析JSON结果
                         eval_data, error = parse_json_response(eval_text)
-                        
                         if error:
                             # 解析失败，使用本地评估
                             local_result = self.perform_basic_evaluation(model_response, expected_output, prompt)
@@ -661,24 +671,19 @@ class PromptEvaluator:
                             local_result["raw_response"] = eval_text
                             results.append(local_result)
                             continue
-                        
                         # 添加提示词token信息
-                        prompt_tokens = count_tokens(prompt)
                         eval_data["prompt_info"] = {
                             "token_count": prompt_tokens,
                         }
-                        
                         # 如果评估结果中没有提示词效率评分，添加一个
                         if "scores" in eval_data and "prompt_efficiency" not in eval_data["scores"]:
                             prompt_efficiency = calculate_prompt_efficiency(prompt_tokens)
                             eval_data["scores"]["prompt_efficiency"] = prompt_efficiency
-                            
                             # 重新计算总体分数，包含提示词效率
                             if "overall_score" in eval_data:
                                 scores = eval_data["scores"]
                                 total = sum(scores.values())
                                 eval_data["overall_score"] = int(total / len(scores))
-                        
                         results.append(eval_data)
                     except Exception as e:
                         # 解析错误，使用本地评估

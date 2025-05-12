@@ -538,7 +538,17 @@ def save_optimized_template(template: dict, opt_prompt: dict, index: int = 0) ->
     new_template = dict(template)
     new_template["name"] = f"{template.get('name', 'template')}_{current_time}_v{index+1}"
     new_template["description"] = f"从 '{template.get('name', 'unknown')}' 优化: {opt_prompt.get('strategy', '')}"
-    new_template["template"] = opt_prompt.get("prompt", "")
+    # 如果opt_prompt是完整模板对象（含template和variables等），直接覆盖
+    if "template" in opt_prompt and "variables" in opt_prompt:
+        new_template["template"] = opt_prompt["template"]
+        new_template["variables"] = opt_prompt["variables"]
+        # 复制其它常用字段（如有）
+        for k in ["strategy", "problem_addressed", "expected_improvements", "reasoning"]:
+            if k in opt_prompt:
+                new_template[k] = opt_prompt[k]
+    else:
+        # 兼容只含prompt字段的情况
+        new_template["template"] = opt_prompt.get("prompt", "")
     save_template(new_template["name"], new_template)
     return new_template["name"]
 

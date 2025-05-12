@@ -718,24 +718,25 @@ def render_iterative_optimization():
             # 展示最优结果
             st.markdown("---")
             st.header("最终最优提示词")
-            best_prompt = result.get("best_prompt", "")
+            best_prompt_obj = result.get("best_prompt_obj", None)
             best_score = result.get("best_score", 0)
             
-            if best_prompt:
-                st.code(best_prompt, language="markdown")
+            if best_prompt_obj and isinstance(best_prompt_obj, dict):
+                best_prompt_str = best_prompt_obj.get("template", "")
+                st.code(best_prompt_str, language="markdown")
                 st.markdown(f"**最优平均分**: {best_score:.2f}")
-                
-                # 自动保存最优提示词为新模板
+                st.markdown("**最优提示词完整对象（含变量）**:")
+                st.code(json.dumps(best_prompt_obj, ensure_ascii=False, indent=2), language="json")
+                # 自动保存最优提示词为新模板（完整对象，包含变量）
                 from utils.common import save_optimized_template
-                new_name = save_optimized_template(template, {"prompt": best_prompt}, 0)
-                st.session_state.iter_best_prompt = best_prompt
+                new_name = save_optimized_template(template, best_prompt_obj, 0)
+                st.session_state.iter_best_prompt = best_prompt_str
                 st.session_state.iter_best_score = best_score
                 st.session_state.iter_best_template_name = new_name
                 st.success(f"最优提示词已自动保存为新模板: {new_name}")
-                
                 # 提供再次保存的选项
                 if st.button("💾 再次保存最优提示词为新模板"):
-                    new_name2 = save_optimized_template(template, {"prompt": best_prompt}, int(time.time())%10000)
+                    new_name2 = save_optimized_template(template, best_prompt_obj, int(time.time())%10000)
                     st.success(f"已保存为新模板: {new_name2}")
             else:
                 st.warning("未能获取最优提示词结果")
